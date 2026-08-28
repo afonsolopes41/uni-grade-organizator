@@ -1,0 +1,689 @@
+/* Organizador de Notas — interface. */
+'use strict';
+
+const $ = (id) => document.getElementById(id);
+
+const state = {
+  review: null,       // resposta de /api/state
+  results: null,      // resposta de /api/results
+  step: 'upload',
+  selected: new Set(),
+  hiddenSubjects: new Set(),
+  search: '',
+  onlySelected: false,
+  openRows: new Set(),
+};
+
+/* ------------------------------------------------------------------ rede */
+
+async function api(path, options = {}) {
+  const response = await fetch(path, options);
+  const type = response.headers.get('content-type') || '';
+  if (!type.includes('application/json')) {
+    if (!response.ok) throw new Error(`Erro ${response.status}`);
+    return response;
+  }
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || `Erro ${response.status}`);
+  return data;
+}
+
+const postJSON = (path, body) =>
+  api(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body || {}),
+  });
+
+function busy(on, text) {
+  $('busy').hidden = !on;
+  if (text) $('busy-text').textContent = text;
+}
+
+let toastTimer;
+function toast(message, isError) {
+  const node = $('toast');
+  node.textContent = message;
+  node.classList.toggle('is-error', !!isError);
+  node.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { node.hidden = true; }, isError ? 7000 : 3500);
+}
+
+const escapeHtml = (value) =>
+  String(value ?? '').replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+/* ------------------------------------------------------------- navegação */
+
+function goto(step) {
+  state.step = step;
+  for (const name of ['upload', 'review', 'results']) {
+    $(`panel-${name}`).hidden = name !== step;
+  }
+  document.querySelectorAll('.step').forEach((button) => {
+    button.classList.toggle('is-active', button.dataset.step === step);
+  });
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function refreshStepAvailability() {
+  const hasFiles = !!(state.review && state.review.files.length);
+  document.querySelector('[data-step="review"]').disabled = !hasFiles;
+  document.querySelector('[data-step="results"]').disabled = !hasFiles;
+  $('upload-actions').hidden = !hasFiles;
+}
+
+/* -------------------------------------------------------------- ficheiros */
+
+function setupDropzone() {
+  const zone = $('dropzone');
+  const input = $('file-input');
+
+  const open = () => input.click();
+  zone.addEventListener('click', open);
+  $('pick').addEventListener('click', (event) => { event.stopPropagation(); open(); });
+  zone.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); open(); }
+  });
+
+  ['dragenter', 'dragover'].forEach((name) =>
+    zone.addEventListener(name, (event) => {
+      event.preventDefault();
+      zone.classList.add('is-over');
+    }));
+  ['dragleave', 'drop'].forEach((name) =>
+    zone.addEventListener(name, (event) => {
+      event.preventDefault();
+      if (name === 'dragleave' && zone.contains(event.relatedTarget)) return;
+      zone.classList.remove('is-over');
+    }));
+
+  zone.addEventListener('drop', (event) => {
+    if (event.dataTransfer?.files?.length) upload(event.dataTransfer.files);
+  });
+  input.addEventListener('change', () => {
+    if (input.files.length) upload(input.files);
+    input.value = '';
+  });
+}
+
+async function upload(fileList) {
+  const form = new FormData();
+  for (const file of fileList) form.append('files', file);
+  busy(true, `A ler ${fileList.length} ficheiro(s)…`);
+  try {
+    const data = await postJSON_form(form);
+    state.review = data;
+    state.results = null;
+    renderFiles();
+    renderUploadErrors(data.rejected || []);
+    refreshStepAvailability();
+    if ((data.accepted || []).length) {
+      toast(`${data.accepted.length} ficheiro(s) lido(s).`);
+      renderReview();
+      goto('review');
+    }
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    busy(false);
+  }
+}
+
+const postJSON_form = (form) =>
+  api('/api/upload', { method: 'POST', body: form });
+
+function renderFiles() {
+  const files = state.review?.files || [];
+  $('file-list').innerHTML = files.map((file) => {
+    const sources = (state.review.sources || []).filter((s) => s.filename === file.name);
+    const subjects = [...new Set(sources.map((s) => s.subject.value).filter(Boolean))];
+    return `
+      <div class="file-card">
+        <div class="file-kind">${escapeHtml(file.kind.toUpperCase())}</div>
+        <div class="grow">
+          <div class="name">${escapeHtml(file.name)}</div>
+          <div class="meta">
+            ${file.tables} tabela(s)
+            ${subjects.length ? ' · ' + escapeHtml(subjects.join(', ')) : ''}
+            ${sources.length ? ' · ' + sources.reduce((n, s) => n + s.row_count, 0) + ' linhas' : ''}
+          </div>
+        </div>
+        <button class="icon-btn" data-remove="${escapeHtml(file.name)}"
+                title="Remover ficheiro">✕</button>
+      </div>`;
+  }).join('');
+
+  $('file-list').querySelectorAll('[data-remove]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      busy(true, 'A remover…');
+      try {
+        state.review = await postJSON('/api/files/remove', { name: button.dataset.remove });
+        state.results = null;
+        renderFiles();
+        renderReview();
+        refreshStepAvailability();
+        if (!state.review.files.length) goto('upload');
+      } catch (error) { toast(error.message, true); } finally { busy(false); }
+    });
+  });
+}
+
+function renderUploadErrors(rejected) {
+  $('upload-errors').innerHTML = rejected.map((item) => `
+    <div class="notice error">
+      <span class="icon">⚠</span>
+      <span><b>${escapeHtml(item.name)}</b>${escapeHtml(item.error)}</span>
+    </div>`).join('');
+}
+
+/* --------------------------------------------------------- confirmação */
+
+function renderReview() {
+  if (!state.review) return;
+  renderQuestions();
+  renderSources();
+  $('pass-mark').value = state.review.settings.pass_mark;
+  $('merge-by-name').checked = state.review.settings.merge_by_name;
+}
+
+function renderQuestions() {
+  const questions = state.review.questions || [];
+  const container = $('questions');
+
+  if (!questions.length) {
+    container.innerHTML = `
+      <div class="card">
+        <h2 class="section-title">Está tudo identificado ✓</h2>
+        <p class="section-lead">Todas as unidades curriculares e épocas foram
+        reconhecidas automaticamente. Pode ver as notas consolidadas — ou abrir os
+        ajustes avançados para confirmar coluna a coluna.</p>
+      </div>`;
+    return;
+  }
+
+  const cards = questions.map((question) => {
+    const choices = question.options.map((option) => {
+      const checked = String(state.review.answers[question.id] ?? question.default) === String(option.value);
+      return `
+        <label class="choice ${checked ? 'is-checked' : ''}">
+          <input type="radio" name="${escapeHtml(question.id)}"
+                 value="${escapeHtml(option.value)}" ${checked ? 'checked' : ''}>
+          <span class="label">${escapeHtml(option.label)}</span>
+          ${option.hint ? `<span class="hint">${escapeHtml(option.hint)}</span>` : ''}
+        </label>`;
+    }).join('');
+
+    const custom = question.allow_custom ? `
+      <div class="custom-row">
+        <input type="text" placeholder="…ou escreva o nome da unidade curricular"
+               data-custom="${escapeHtml(question.id)}"
+               value="${escapeHtml(customValue(question))}">
+        <button class="btn btn-ghost btn-sm" data-custom-save="${escapeHtml(question.id)}">Usar</button>
+      </div>` : '';
+
+    return `
+      <div class="card question ${question.severity === 'warning' ? 'is-warning' : ''}"
+           data-question="${escapeHtml(question.id)}">
+        <h3>${escapeHtml(question.title)}</h3>
+        ${question.detail ? `<p class="detail">${escapeHtml(question.detail)}</p>` : ''}
+        <div class="choices">${choices}</div>
+        ${custom}
+      </div>`;
+  }).join('');
+
+  container.innerHTML = `
+    <div class="card">
+      <h2 class="section-title">Faltam ${questions.length} confirmação(ões)</h2>
+      <p class="section-lead">Os ficheiros não dizem tudo o que é preciso saber.
+      A opção já marcada é o palpite da aplicação — clique nela para a confirmar,
+      ou escolha outra. O que não for confirmado fica com o palpite.</p>
+      <button class="btn btn-ghost btn-sm" id="accept-all">✓ Aceitar todos os palpites</button>
+    </div>
+    ${cards}`;
+
+  container.querySelectorAll('input[type=radio]').forEach((input) => {
+    const commit = () => saveAnswer(input.name, input.value);
+    input.addEventListener('change', commit);
+    input.addEventListener('click', commit);
+  });
+
+  const acceptAll = container.querySelector('#accept-all');
+  if (acceptAll) acceptAll.addEventListener('click', () => {
+    const answers = {};
+    for (const question of questions) {
+      const value = state.review.answers[question.id] ?? question.default;
+      if (value) answers[question.id] = value;
+    }
+    saveAnswers(answers);
+  });
+  container.querySelectorAll('[data-custom-save]').forEach((button) => {
+    const id = button.dataset.customSave;
+    const field = container.querySelector(`[data-custom="${CSS.escape(id)}"]`);
+    const commit = () => { if (field.value.trim()) saveAnswer(id, field.value.trim()); };
+    button.addEventListener('click', commit);
+    field.addEventListener('keydown', (event) => { if (event.key === 'Enter') commit(); });
+  });
+}
+
+function customValue(question) {
+  const answer = state.review.answers[question.id];
+  if (!answer) return '';
+  return question.options.some((o) => String(o.value) === String(answer)) ? '' : answer;
+}
+
+function saveAnswer(id, value) {
+  // Evita um pedido inútil quando o "change" e o "click" disparam os dois.
+  if (String(state.review.answers[id] ?? '') === String(value)) return Promise.resolve();
+  return saveAnswers({ [id]: value });
+}
+
+async function saveAnswers(answers) {
+  if (!Object.keys(answers).length) return;
+  busy(true, 'A aplicar…');
+  try {
+    state.review = await postJSON('/api/answers', { answers });
+    state.results = null;
+    renderReview();
+    renderFiles();
+  } catch (error) { toast(error.message, true); } finally { busy(false); }
+}
+
+async function saveOverride(sourceId, columnIndex, spec) {
+  busy(true, 'A aplicar…');
+  try {
+    state.review = await postJSON('/api/answers',
+      { overrides: { [sourceId]: { [columnIndex]: spec } } });
+    state.results = null;
+    renderReview();
+  } catch (error) { toast(error.message, true); } finally { busy(false); }
+}
+
+const ROLE_LABELS = {
+  name: 'Nome do aluno', id: 'Nº de aluno', grade: 'Nota', ignore: 'Ignorar',
+};
+const EPOCA_OPTIONS = [
+  ['', '— sem época (componente comum)'],
+  ['epoca1', '1.ª Época'], ['epoca2', '2.ª Época'], ['especial', 'Época Especial'],
+];
+
+function renderSources() {
+  $('sources').innerHTML = (state.review.sources || []).map((source) => {
+    const rows = source.columns.map((column) => `
+      <tr>
+        <td><b>${escapeHtml(column.header)}</b></td>
+        <td>
+          <select data-src="${source.id}" data-col="${column.index}" data-field="role">
+            ${Object.entries(ROLE_LABELS).map(([value, label]) =>
+              `<option value="${value}" ${column.role === value ? 'selected' : ''}>${label}</option>`).join('')}
+          </select>
+        </td>
+        <td>
+          <select data-src="${source.id}" data-col="${column.index}" data-field="epoca"
+                  ${column.role !== 'grade' ? 'disabled' : ''}>
+            ${EPOCA_OPTIONS.map(([value, label]) =>
+              `<option value="${value}" ${(column.epoca || '') === value ? 'selected' : ''}>${label}</option>`).join('')}
+          </select>
+        </td>
+        <td>
+          <select data-src="${source.id}" data-col="${column.index}" data-field="kind"
+                  ${column.role !== 'grade' ? 'disabled' : ''}>
+            <option value="final" ${column.kind === 'final' ? 'selected' : ''}>Nota final</option>
+            <option value="component" ${column.kind === 'component' ? 'selected' : ''}>Componente</option>
+          </select>
+        </td>
+        <td class="samples" title="${escapeHtml(column.samples.join(' · '))}">
+          ${escapeHtml(column.samples.join(' · ')) || '—'}</td>
+        <td><span class="badge ${column.confidence >= 0.7 ? 'green' : column.confidence >= 0.5 ? 'amber' : 'red'}"
+                  title="${escapeHtml(column.reason)}">${Math.round(column.confidence * 100)}%</span></td>
+      </tr>`).join('');
+
+    return `
+      <div class="source-block">
+        <div class="source-head">
+          <span class="title">${escapeHtml(source.filename)}</span>
+          <div class="badge-row">
+            <span class="badge">${escapeHtml(source.location)}</span>
+            <span class="badge accent">${escapeHtml(source.subject.value || 'UC por definir')}</span>
+            ${source.academic_year.value ? `<span class="badge">${escapeHtml(source.academic_year.value)}</span>` : ''}
+            ${source.document_date ? `<span class="badge">documento de ${escapeHtml(source.document_date)}</span>` : ''}
+            <span class="badge">${source.row_count} alunos</span>
+          </div>
+        </div>
+        <table class="col-table">
+          <thead><tr>
+            <th>Coluna</th><th>É</th><th>Época</th><th>Tipo</th>
+            <th>Exemplos</th><th>Confiança</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+  }).join('');
+
+  $('sources').querySelectorAll('select').forEach((select) => {
+    select.addEventListener('change', () => {
+      const { src, col, field } = select.dataset;
+      saveOverride(src, col, { [field]: select.value });
+    });
+  });
+}
+
+/* ---------------------------------------------------------- resultados */
+
+async function loadResults() {
+  busy(true, 'A juntar as notas…');
+  try {
+    state.results = await api('/api/results');
+    renderResults();
+    goto('results');
+  } catch (error) { toast(error.message, true); } finally { busy(false); }
+}
+
+function renderResults() {
+  const data = state.results;
+  if (!data) return;
+
+  const stats = data.stats;
+  $('stats').innerHTML = `
+    <div class="stat"><div class="value">${stats.students}</div><div class="label">alunos</div></div>
+    <div class="stat"><div class="value">${stats.subjects}</div><div class="label">unidades curriculares</div></div>
+    <div class="stat green"><div class="value">${stats.approved}</div><div class="label">aprovações</div></div>
+    <div class="stat red"><div class="value">${stats.failed}</div><div class="label">reprovações</div></div>
+    <div class="stat"><div class="value">${stats.average ?? '—'}</div><div class="label">média das melhores notas</div></div>`;
+
+  $('pending-warning').innerHTML = (data.questions || []).length ? `
+    <div class="notice warning">
+      <span class="icon">⚠</span>
+      <span><b>${data.questions.length} confirmação(ões) por responder</b>
+      As notas abaixo usam os palpites automáticos. Volte a «Confirmar» para as rever.</span>
+    </div>` : '';
+
+  $('subject-filters').innerHTML = data.subjects.map((subject) => `
+    <button class="chip ${state.hiddenSubjects.has(subject) ? '' : 'is-on'}"
+            data-subject="${escapeHtml(subject)}">${escapeHtml(subject)}</button>`).join('');
+  $('subject-filters').querySelectorAll('[data-subject]').forEach((chip) => {
+    chip.addEventListener('click', () => {
+      const subject = chip.dataset.subject;
+      if (state.hiddenSubjects.has(subject)) state.hiddenSubjects.delete(subject);
+      else state.hiddenSubjects.add(subject);
+      renderResults();
+    });
+  });
+
+  renderTable();
+  renderNotices();
+}
+
+const visibleSubjects = () =>
+  (state.results?.subjects || []).filter((s) => !state.hiddenSubjects.has(s));
+
+function filteredStudents() {
+  const term = state.search.trim().toLowerCase();
+  const subjects = visibleSubjects();
+  return (state.results?.students || []).filter((student) => {
+    if (state.onlySelected && !state.selected.has(student.key)) return false;
+    if (subjects.length && !subjects.some((s) => student.subjects[s])) return false;
+    if (!term) return true;
+    return student.name.toLowerCase().includes(term)
+      || (student.student_id || '').includes(term)
+      || student.all_names.some((n) => n.toLowerCase().includes(term));
+  });
+}
+
+function renderTable() {
+  const subjects = visibleSubjects();
+  const students = filteredStudents();
+
+  $('grades-head').innerHTML = `
+    <tr>
+      <th style="width:34px"></th>
+      <th style="width:96px">Nº</th>
+      <th>Aluno</th>
+      ${subjects.map((s) => `<th class="num">${escapeHtml(s)}</th>`).join('')}
+      <th class="num" style="width:90px">Média</th>
+    </tr>`;
+
+  $('grades-body').innerHTML = students.map((student) => {
+    const cells = subjects.map((subject) => {
+      const data = student.subjects[subject];
+      return `<td class="num">${gradePill(data)}</td>`;
+    }).join('');
+
+    const values = subjects
+      .map((s) => student.subjects[s]?.best?.value)
+      .filter((v) => typeof v === 'number');
+    const average = values.length
+      ? (values.reduce((a, b) => a + b, 0) / values.length).toFixed(2).replace('.', ',')
+      : '—';
+
+    const open = state.openRows.has(student.key);
+    return `
+      <tr class="${open ? 'is-open' : ''}" data-key="${escapeHtml(student.key)}">
+        <td><input type="checkbox" data-select="${escapeHtml(student.key)}"
+                   ${state.selected.has(student.key) ? 'checked' : ''}
+                   aria-label="Seleccionar ${escapeHtml(student.name)}"></td>
+        <td class="student-id">${escapeHtml(student.student_id || '—')}</td>
+        <td>
+          <div class="name-cell">
+            <button class="toggle" data-toggle="${escapeHtml(student.key)}"
+                    aria-label="Ver detalhe">▶</button>
+            <span class="student-name">${escapeHtml(student.name)}</span>
+          </div>
+        </td>
+        ${cells}
+        <td class="num">${average}</td>
+      </tr>
+      ${open ? detailRow(student, subjects) : ''}`;
+  }).join('');
+
+  $('no-rows').hidden = students.length > 0;
+  $('selected-count').textContent = state.selected.size;
+
+  $('grades-body').querySelectorAll('[data-toggle]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const key = button.dataset.toggle;
+      if (state.openRows.has(key)) state.openRows.delete(key);
+      else state.openRows.add(key);
+      renderTable();
+    });
+  });
+  $('grades-body').querySelectorAll('[data-select]').forEach((box) => {
+    box.addEventListener('change', () => {
+      if (box.checked) state.selected.add(box.dataset.select);
+      else state.selected.delete(box.dataset.select);
+      $('selected-count').textContent = state.selected.size;
+      if (state.onlySelected) renderTable();
+    });
+  });
+}
+
+function gradePill(data) {
+  if (!data || !data.best) return '<span class="grade-pill none">—</span>';
+  const cls = data.approved === true ? 'pass' : data.approved === false ? 'fail' : 'none';
+  const epoca = data.best_epoca === 'epoca1' ? '1.ª'
+    : data.best_epoca === 'epoca2' ? '2.ª'
+    : data.best_epoca === 'especial' ? 'esp.' : '';
+  return `<span class="grade-pill ${cls}" title="${escapeHtml(data.best_epoca_label)}">
+    ${escapeHtml(data.best.label)}${epoca ? `<small>${epoca}</small>` : ''}</span>`;
+}
+
+function detailRow(student, subjects) {
+  const cards = subjects.filter((s) => student.subjects[s]).map((subject) => {
+    const data = student.subjects[subject];
+    const lines = (state.results.epocas || []).map((epoca) => {
+      const info = data.epocas[epoca.key];
+      if (!info) return '';
+      const best = data.best_epoca === epoca.key;
+      const components = Object.entries(info.components || {});
+      return `
+        <div class="epoca-line ${best ? 'is-best' : ''}">
+          <span>${escapeHtml(epoca.label)}</span>
+          <span>${escapeHtml(info.grade.label)}
+            ${best ? '<span class="tag">melhor</span>' : ''}</span>
+        </div>
+        ${components.length ? `<div class="components">${
+          components.map(([name, grade]) =>
+            `${escapeHtml(name)}: <b>${escapeHtml(grade.label)}</b>`).join(' · ')}</div>` : ''}`;
+    }).join('');
+
+    const bestInfo = data.epocas[data.best_epoca] || {};
+    return `
+      <div class="detail-card">
+        <h4>${escapeHtml(subject)}</h4>
+        ${lines || '<p class="components">Sem notas registadas.</p>'}
+        <div class="source-note">
+          Nota final: <b>${escapeHtml(data.best?.label ?? '—')}</b>
+          ${data.best_rounded != null ? ` (arredondada: ${data.best_rounded})` : ''}
+          ${bestInfo.source_label ? `<br>Origem: ${escapeHtml(bestInfo.source_label)}` : ''}
+        </div>
+      </div>`;
+  }).join('');
+
+  const alternates = student.all_names.length > 1 || student.all_ids.length > 1 ? `
+    <div class="detail-card">
+      <h4>Identificação</h4>
+      <div class="components">
+        Nomes: <b>${escapeHtml(student.all_names.join(' · ') || '—')}</b><br>
+        Números: <b>${escapeHtml(student.all_ids.join(' · ') || '—')}</b>
+      </div>
+    </div>` : '';
+
+  return `<tr class="detail-row"><td colspan="${subjects.length + 4}">
+    <div class="detail-inner">${cards}${alternates}</div></td></tr>`;
+}
+
+function renderNotices() {
+  const data = state.results;
+  const entries = [...(data.conflicts || []), ...(data.warnings || [])];
+  if (!entries.length) {
+    $('notices').innerHTML = `
+      <div class="notice info"><span class="icon">✓</span>
+      <span>Nenhum conflito: os ficheiros encaixaram todos sem ambiguidades.</span></div>`;
+    return;
+  }
+  $('notices').innerHTML = `
+    <details class="notice-group">
+      <summary>${entries.length} aviso(s) e conflito(s) — vale a pena espreitar</summary>
+      <div>${entries.map((entry) => `
+        <div class="notice ${entry.severity === 'warning' ? 'warning' : 'info'}">
+          <span class="icon">${entry.severity === 'warning' ? '⚠' : 'ℹ'}</span>
+          <span>
+            <b>${escapeHtml(entry.student || entry.type)}${
+              entry.subject ? ' — ' + escapeHtml(entry.subject) : ''}${
+              entry.epoca ? ' (' + escapeHtml(entry.epoca) + ')' : ''}</b>
+            ${escapeHtml(entry.detail)}
+            ${entry.chosen ? `<br><small>Foi usado: <b>${escapeHtml(entry.chosen)}</b></small>` : ''}
+          </span>
+        </div>`).join('')}</div>
+    </details>`;
+}
+
+/* -------------------------------------------------------------- exportar */
+
+async function exportExcel() {
+  const students = state.selected.size ? [...state.selected] : null;
+  busy(true, 'A criar o Excel…');
+  try {
+    const response = await fetch('/api/export', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ students, subjects: visibleSubjects() }),
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.error || `Erro ${response.status}`);
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'notas-consolidadas.xlsx';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    toast(students ? `Excel criado com ${students.length} aluno(s).` : 'Excel criado.');
+  } catch (error) { toast(error.message, true); } finally { busy(false); }
+}
+
+/* ------------------------------------------------------------- arranque */
+
+function setup() {
+  setupDropzone();
+
+  document.querySelectorAll('.step').forEach((button) => {
+    button.addEventListener('click', () => {
+      if (button.disabled) return;
+      const step = button.dataset.step;
+      if (step === 'results') loadResults();
+      else goto(step);
+    });
+  });
+
+  $('btn-to-review').addEventListener('click', () => { renderReview(); goto('review'); });
+  $('btn-back-upload').addEventListener('click', () => goto('upload'));
+  $('btn-back-review').addEventListener('click', () => { renderReview(); goto('review'); });
+  $('btn-to-results').addEventListener('click', loadResults);
+  $('btn-add-more').addEventListener('click', () => goto('upload'));
+  $('btn-export').addEventListener('click', exportExcel);
+
+  $('btn-reset').addEventListener('click', async () => {
+    busy(true, 'A limpar…');
+    try {
+      state.review = await postJSON('/api/reset');
+      state.results = null;
+      state.selected.clear();
+      state.openRows.clear();
+      state.hiddenSubjects.clear();
+      renderFiles();
+      renderUploadErrors([]);
+      refreshStepAvailability();
+      goto('upload');
+    } catch (error) { toast(error.message, true); } finally { busy(false); }
+  });
+
+  let searchTimer;
+  $('search').addEventListener('input', (event) => {
+    state.search = event.target.value;
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(renderTable, 130);
+  });
+
+  $('only-selected').addEventListener('change', (event) => {
+    state.onlySelected = event.target.checked;
+    renderTable();
+  });
+  $('btn-select-visible').addEventListener('click', () => {
+    filteredStudents().forEach((student) => state.selected.add(student.key));
+    renderTable();
+  });
+  $('btn-clear-selection').addEventListener('click', () => {
+    state.selected.clear();
+    state.onlySelected = false;
+    $('only-selected').checked = false;
+    renderTable();
+  });
+
+  const saveSettings = async (settings) => {
+    busy(true, 'A aplicar…');
+    try {
+      state.review = await postJSON('/api/answers', { settings });
+      state.results = null;
+      renderReview();
+    } catch (error) { toast(error.message, true); } finally { busy(false); }
+  };
+  $('pass-mark').addEventListener('change', (event) =>
+    saveSettings({ pass_mark: parseFloat(event.target.value) }));
+  $('merge-by-name').addEventListener('change', (event) =>
+    saveSettings({ merge_by_name: event.target.checked }));
+
+  api('/api/state').then((data) => {
+    state.review = data;
+    renderFiles();
+    refreshStepAvailability();
+    if (data.files.length) { renderReview(); goto('review'); }
+  }).catch(() => {});
+}
+
+document.addEventListener('DOMContentLoaded', setup);
