@@ -142,9 +142,12 @@ def _has_word(header: str, words: list) -> Optional[str]:
 
     for variant in variants:
         tokens = variant.split()
+        padded = f" {variant} "
         for word in sorted(words, key=len, reverse=True):
             if " " in word:
-                if word in variant:
+                # Palavras inteiras: "semester 1" nao pode casar dentro de
+                # "semester 1st season", que e o 2.o semestre.
+                if f" {word} " in padded:
                     return word
             elif word in tokens:
                 return word
@@ -739,6 +742,42 @@ _SUBJECT_NOISE = re.compile(
 )
 
 
+#: "03713 - SGR - Segurança e Gestão de Redes": codigo, sigla e nome.
+_SUBJECT_HEADER_RE = re.compile(
+    r"^\s*(?:(?P<code>\d{3,8})\s*[-–—]\s*)?"
+    r"(?:(?P<acronym>[A-Z][A-Z0-9]{1,9})\s*[-–—]\s*)?"
+    r"(?P<name>[^\d].{4,})$"
+)
+
+
+def parse_subject_header(text: str):
+    """Reparte "03713 - SGR - Segurança e Gestão de Redes" nas suas tres partes.
+
+    O codigo e a sigla sao o que permite reconhecer a mesma cadeira quando as
+    pautas vem em linguas diferentes.
+    """
+    match = _SUBJECT_HEADER_RE.match(clean_text(text))
+    if not match:
+        return None, None, None
+    name = clean_text(match.group("name")).strip("-–— ")
+    return match.group("code"), match.group("acronym"), name or None
+
+
+def guess_subject_code(filename: str, table: RawTable) -> Guess:
+    """Codigo ou sigla da cadeira -- a chave que junta pautas da mesma UC."""
+    for line in table.title_lines[:10]:
+        code, acronym, name = parse_subject_header(line)
+        if code and name and _subject_score(name) > 0:
+            return Guess(code, 0.9, f"código no documento: «{clean_text(line)[:60]}»")
+        if acronym and name and _subject_score(name) > 0:
+            return Guess(acronym, 0.7, f"sigla no documento: «{clean_text(line)[:60]}»")
+
+    acronym = _acronym_from(os.path.splitext(os.path.basename(filename))[0])
+    if acronym:
+        return Guess(acronym, 0.5, f"sigla no nome do ficheiro: «{filename}»")
+    return Guess(None, 0.0, "")
+
+
 #: Palavras que desqualificam um pedaco de texto como nome de UC.
 _NOT_A_SUBJECT = {
     # instituicao
@@ -787,6 +826,12 @@ def guess_subject(filename: str, table: RawTable) -> Guess:
     disso. Em vez de assumir que esta no principio, pontuam-se todos os pedacos
     e fica o melhor.
     """
+    # "03713 - SGR - Segurança e Gestão de Redes" e a forma mais clara de todas.
+    for line in table.title_lines[:10]:
+        code, acronym, name = parse_subject_header(line)
+        if (code or acronym) and name and _subject_score(name) >= 6:
+            return Guess(name, 0.9, f"cabeçalho do documento: «{clean_text(line)[:60]}»")
+
     best_text, best_score = None, 0.0
     for line in table.title_lines[:10]:
         for segment in re.split(r"\s+[-–—]\s+|\s*\|\s*|\s*:\s*", clean_text(line)):
@@ -823,11 +868,13 @@ def guess_subject(filename: str, table: RawTable) -> Guess:
 
 
 def _acronym_from(stem: str) -> Optional[str]:
-    """Siglas tipo "SCSFM" em Pauta_SCSFM_2025_2026_1E."""
+    """Siglas tipo "SCSFM" em Pauta_SCSFM_2025_2026_1E, ou "SGR" em SGR202526."""
     for token in re.split(r"[\s_\-.]+", stem):
-        if 2 <= len(token) <= 8 and token.isupper() and token.isalpha():
-            if norm_text(token) not in {"pauta", "notas", "uc", "ist"}:
-                return token
+        letters = re.match(r"^([A-Z]{2,8})\d*$", token)
+        if letters:
+            candidate = letters.group(1)
+            if norm_text(candidate) not in {"pauta", "notas", "uc", "ist", "iscte"}:
+                return candidate
     return None
 
 
@@ -851,6 +898,51 @@ def _clean_subject_token(text: str):
     if not words or not any(len(w) >= 3 for w in words):
         return None
     return " ".join(words)
+
+
+#: "2º Semestre", "2nd Semester", "Semestre 2". Precisa de expressao propria:
+#: com listas de palavras, o "1st" de "1st Season" acabava por casar com
+#: "semester 1" e trocava o semestre.
+_SEMESTER_BEFORE = re.compile(r"\b([12])\s*(?:st|nd|rd|th|o|a)?\s+(?:semestre|semester|term)\b")
+_SEMESTER_AFTER = re.compile(r"\b(?:semestre|semester|term)\s+([12])\b(?!\s*(?:st|nd|rd|th))")
+
+
+def guess_semester(filename: str, table: RawTable) -> Guess:
+    """Semestre em que a cadeira se da, quando a pauta o diz."""
+    for text in table.title_lines[:10] + [os.path.basename(filename)]:
+        normalized = split_glued(norm_header(text))
+        match = _SEMESTER_BEFORE.search(normalized) or _SEMESTER_AFTER.search(normalized)
+        if match:
+            return Guess(match.group(1), 0.85,
+                         f"encontrado em «{clean_text(text)[:50]}»")
+    return Guess(None, 0.0, "")
+
+
+#: "Teste 1 (30%)", "Exame (100%)", "Laboratório 2 (9%)" -- uma pauta que se
+#: anuncia como um componente com um peso nao traz a nota final da epoca.
+_COMPONENT_TITLE_RE = re.compile(
+    r"\b(teste|test|exame|exam|frequencia|prova|laboratorio|lab|trabalho|"
+    r"projeto|projecto|mini teste|quiz)\s*(\d?)\s*\(\s*(\d{1,3})\s*%\s*\)")
+
+
+def guess_component_pauta(table: RawTable):
+    """A pauta e de um componente so? Devolve ``(etiqueta, peso)``.
+
+    Uma pauta intitulada "Teste 1 (30%)" tem uma coluna "Nota" que e a nota
+    *desse teste*, nao a nota final da cadeira. Tratá-la como nota final punha-a
+    a competir com a pauta da época, e ganhava a errada.
+    """
+    for line in table.title_lines[:10]:
+        # norm_text (e nao norm_header) porque o "(30%)" tem de sobreviver.
+        match = _COMPONENT_TITLE_RE.search(split_glued(norm_text(line)))
+        if not match:
+            continue
+        weight = int(match.group(3))
+        if weight >= 100:
+            return None, None
+        label = clean_text(f"{match.group(1).capitalize()} {match.group(2)}").strip()
+        return label, weight
+    return None, None
 
 
 def guess_year(filename: str, table: RawTable) -> Guess:
@@ -917,12 +1009,18 @@ def build_source(source_id: str, filename: str, kind: str, table: RawTable,
     file_epoca, epoca_guess = guess_file_epoca(filename, table)
     columns = classify_columns(header_row, data_rows, file_epoca)
 
+    component_label, component_weight = guess_component_pauta(table)
+    if component_label:
+        _mark_as_component_pauta(columns, component_label, component_weight)
+
     source = Source(
         id=source_id,
         filename=filename,
         kind=kind,
         location=table.location,
         subject=guess_subject(filename, table),
+        subject_code=guess_subject_code(filename, table),
+        semester=guess_semester(filename, table),
         academic_year=guess_year(filename, table),
         document_date=guess_document_date(table),
         columns=columns,
@@ -932,7 +1030,30 @@ def build_source(source_id: str, filename: str, kind: str, table: RawTable,
     )
     if epoca_guess.value:
         source.notes.append(f"Época sugerida pelo ficheiro: {epoca_guess.reason}")
+    if component_label:
+        source.component_label = component_label
+        source.component_weight = component_weight
+        source.notes.append(
+            f"Esta pauta é só «{component_label}» ({component_weight}% da nota), "
+            "por isso conta como componente e não como nota final.")
     return source
+
+
+def _mark_as_component_pauta(columns: list, label: str, weight: int) -> None:
+    """A nota da pauta passa a ser esse componente, com o nome dele."""
+    finals = [c for c in columns if c.role == ROLE_GRADE and c.kind == KIND_FINAL]
+    if len(finals) != 1:
+        return
+    column = finals[0]
+    column.kind = KIND_COMPONENT
+    column.confidence = 0.8
+    # Fixa a decisao: sem isto, a escolha automatica da nota final voltava a
+    # promover esta coluna, por ser a unica coluna de notas do ficheiro.
+    column.locked = True
+    column.reason = f"a pauta é de «{label}» ({weight}%), não da nota final"
+    if norm_header(column.header) in ("nota", "grade", "mark", "classificacao",
+                                      "nota final", "valor"):
+        column.header = f"{label} ({weight}%)"
 
 
 _FOOTER_TOKENS = {"total", "media", "média", "resumo", "aprovados", "reprovados",
@@ -985,7 +1106,7 @@ def build_questions(sources: list) -> list:
         grade_columns = source.grade_columns()
         finals = [c for c in grade_columns if c.kind == KIND_FINAL]
 
-        if grade_columns and not finals:
+        if grade_columns and not finals and not source.component_label:
             questions.append(Question(
                 id=f"{source.id}:final",
                 type="final_column",

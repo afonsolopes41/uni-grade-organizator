@@ -49,6 +49,7 @@ _ORDINAL_RE = re.compile(r"[ºª°]")
 def norm_text(value: Any) -> str:
     """Chave comparavel: minusculas, sem acentos, espacos normalizados."""
     text = _ORDINAL_RE.sub("", clean_text(value))
+    text = _CAMEL_RE.sub(" ", text)
     return _WS_RE.sub(" ", strip_accents(text).lower()).strip()
 
 
@@ -58,6 +59,8 @@ def norm_header(value: Any) -> str:
 
 
 _GLUED_RE = re.compile(r"(?<=[a-z])(?=\d)|(?<=\d)(?=[a-z])")
+#: "SemestreTeste" -- ha PDFs onde duas palavras seguidas saem sem espaco.
+_CAMEL_RE = re.compile(r"(?<=[a-zà-ÿ])(?=[A-ZÀ-Þ])")
 
 
 def split_glued(text: str) -> str:

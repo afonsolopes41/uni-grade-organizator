@@ -201,13 +201,19 @@ def build_workbook(result: dict, source_labels: Optional[list] = None,
         subject_extent[subject] = _subject_extent(count)
 
     summary = workbook.create_sheet("Resumo")
-    _build_summary(summary, students, subjects, subject_sheets, subject_extent,
-                   pass_marks, pass_mark, stamp, origem)
+    summary_first_row = _build_summary(summary, students, subjects, subject_sheets,
+                                       subject_extent, pass_marks, pass_mark,
+                                       stamp, origem)
 
     for subject in subjects:
         sheet = workbook.create_sheet(subject_sheets[subject])
         _build_subject_sheet(sheet, subject, students,
                              pass_marks.get(subject, pass_mark), stamp)
+
+    if subjects:
+        _build_averages(workbook.create_sheet("Médias"), students, subjects,
+                        subject_sheets, summary_first_row, pass_mark,
+                        result.get("curriculum") or {}, stamp)
 
     _build_detail(workbook.create_sheet("Detalhe"), students, subjects, stamp)
     _build_notices(workbook.create_sheet("Avisos"), result, stamp)
@@ -313,6 +319,7 @@ def _build_summary(sheet: Worksheet, students: list, subjects: list,
 
     if students and subjects:
         _distribution_block(sheet, last_data + 3, subjects, subject_sheets, subject_extent)
+    return first_data
 
 
 def _distribution_block(sheet: Worksheet, row: int, subjects: list,
@@ -497,6 +504,127 @@ def _state_rules(sheet: Worksheet, ref: str) -> None:
         operator="equal", formula=['"Reprovado"'],
         font=Font(name=FONT, size=10, bold=True, color=RED),
         fill=PatternFill("solid", bgColor=RED_BG)))
+
+
+# --------------------------------------------------------------------------
+# Folha "Médias"
+# --------------------------------------------------------------------------
+
+def _build_averages(sheet: Worksheet, students: list, subjects: list,
+                    subject_sheets: dict, resumo_first: int, default_pass: float,
+                    curriculum: dict, stamp: str) -> None:
+    """Medias por semestre, por ano e de fim de curso.
+
+    Cada UC tem aqui duas colunas de apoio -- quanto contribui e quanto pesa --
+    e as medias sao a divisao de uma soma pela outra. Assim tudo recalcula: uma
+    nota corrigida na folha da UC atravessa o Resumo e chega aqui. Quando os
+    ECTS nao estao preenchidos o peso e 1, o que da a media simples.
+    """
+    resumo = quote_sheetname("Resumo")
+
+    # Uma cadeira sem ano ou semestre nao entra nas medias parciais.
+    grupos: dict = {}
+    anos: dict = {}
+    for subject in subjects:
+        meta = curriculum.get(subject) or {}
+        year, semester = meta.get("year"), meta.get("semester")
+        if year is None or semester is None:
+            continue
+        grupos.setdefault((year, semester), []).append(subject)
+        anos.setdefault(year, []).append(subject)
+
+    headers = ["Nº Aluno", "Nome"]
+    for subject in subjects:
+        headers += [f"{subject} · contribui", f"{subject} · peso"]
+    grupo_keys = sorted(grupos)
+    headers += [f"{y}.º ano · {s}.º sem." for y, s in grupo_keys]
+    ano_keys = sorted(anos)
+    headers += [f"Média do {y}.º ano" for y in ano_keys]
+    headers += ["Média de curso", "Arredondada", "UCs", "ECTS"]
+    width = len(headers)
+
+    row = _title_block(sheet, width, "Médias por semestre, por ano e de curso",
+                       "Contam as cadeiras aprovadas · os ECTS em branco valem 1 "
+                       f"(média simples) · gerado em {stamp}")
+
+    widths = [11, 34] + [14, 10] * len(subjects) + [15] * len(grupo_keys) \
+             + [15] * len(ano_keys) + [15, 12, 8, 9]
+    header_row = row
+    _header_row(sheet, header_row, headers, widths)
+
+    primeira_uc = 3
+    coluna_de: dict = {}
+    for index, subject in enumerate(subjects):
+        coluna_de[subject] = primeira_uc + index * 2
+
+    first_data = header_row + 1
+    for offset, student in enumerate(students):
+        current = first_data + offset
+        origem = resumo_first + offset
+        _id_cell(sheet, current, 1, student["student_id"])
+        sheet.cell(row=current, column=2, value=student["name"])
+
+        for index, subject in enumerate(subjects):
+            meta = curriculum.get(subject) or {}
+            ects = meta.get("ects") or 1
+            nota = f"{resumo}!{get_column_letter(3 + index)}{origem}"
+            minima = (f"{quote_sheetname(subject_sheets[subject])}"
+                      f"!$B${SUBJECT_PASS_ROW}")
+            conta = f"AND(ISNUMBER({nota}),{nota}>={minima})"
+            base = coluna_de[subject]
+            sheet.cell(row=current, column=base,
+                       value=f"=IF({conta},{nota}*{ects},0)").number_format = "0.##"
+            sheet.cell(row=current, column=base + 1,
+                       value=f"=IF({conta},{ects},0)").number_format = "0.##"
+
+        coluna = primeira_uc + len(subjects) * 2
+        for key in grupo_keys:
+            _average_cell(sheet, current, coluna, grupos[key], coluna_de)
+            coluna += 1
+        for year in ano_keys:
+            _average_cell(sheet, current, coluna, anos[year], coluna_de)
+            coluna += 1
+
+        _average_cell(sheet, current, coluna, subjects, coluna_de)
+        media = f"{get_column_letter(coluna)}{current}"
+        sheet.cell(row=current, column=coluna + 1,
+                   value=f'=IF(ISNUMBER({media}),ROUND({media},0),"—")').number_format = "0"
+        pesos = "+".join(f"IF({get_column_letter(coluna_de[s] + 1)}{current}>0,1,0)"
+                         for s in subjects) or "0"
+        sheet.cell(row=current, column=coluna + 2, value=f"={pesos}")
+        somas = "+".join(f"{get_column_letter(coluna_de[s] + 1)}{current}"
+                         for s in subjects) or "0"
+        sheet.cell(row=current, column=coluna + 3, value=f"={somas}").number_format = "0.##"
+
+    last_data = first_data + len(students) - 1
+    if students:
+        _style_body(sheet, first_data, last_data, width)
+        inicio = get_column_letter(primeira_uc + len(subjects) * 2)
+        fim = get_column_letter(primeira_uc + len(subjects) * 2
+                                + len(grupo_keys) + len(ano_keys))
+        _grade_rules(sheet, f"{inicio}{first_data}:{fim}{last_data}", default_pass)
+        sheet.auto_filter.ref = f"A{header_row}:{get_column_letter(width)}{last_data}"
+        if subjects:
+            # As colunas de apoio ficam agrupadas: dao para recolher.
+            sheet.column_dimensions.group(
+                get_column_letter(primeira_uc),
+                get_column_letter(primeira_uc + len(subjects) * 2 - 1), hidden=True)
+
+    sheet.freeze_panes = sheet.cell(row=first_data, column=3)
+
+
+def _average_cell(sheet: Worksheet, row: int, column: int, subjects: list,
+                  coluna_de: dict) -> None:
+    """Soma das contribuicoes a dividir pela soma dos pesos."""
+    if not subjects:
+        sheet.cell(row=row, column=column, value="—")
+        return
+    contribui = "+".join(f"{get_column_letter(coluna_de[s])}{row}" for s in subjects)
+    peso = "+".join(f"{get_column_letter(coluna_de[s] + 1)}{row}" for s in subjects)
+    cell = sheet.cell(row=row, column=column,
+                      value=f'=IF(({peso})=0,"—",ROUND(({contribui})/({peso}),2))')
+    cell.number_format = "0.00"
+    cell.font = Font(name=FONT, size=10, bold=True)
 
 
 # --------------------------------------------------------------------------

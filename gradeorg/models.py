@@ -124,12 +124,20 @@ class Source:
     kind: str                      # pdf | xlsx | csv | txt
     location: str = ""
     subject: Guess = field(default_factory=Guess)
+    #: Codigo ou sigla da cadeira -- junta pautas da mesma UC em linguas
+    #: diferentes ("03713 - SGR" aparece nas duas).
+    subject_code: Guess = field(default_factory=Guess)
+    #: Semestre em que a cadeira se da (1 ou 2), quando a pauta o diz.
+    semester: Guess = field(default_factory=Guess)
     academic_year: Guess = field(default_factory=Guess)
     document_date: Optional[str] = None   # ISO, usado para desempatar conflitos
     columns: list = field(default_factory=list)     # list[Column]
     data_rows: list = field(default_factory=list)   # list[list[str]]
     header_row: list = field(default_factory=list)
     notes: list = field(default_factory=list)
+    #: Quando a pauta e de um so componente ("Teste 1 (30%)"), o nome e o peso.
+    component_label: Optional[str] = None
+    component_weight: Optional[int] = None
     file_order: int = 0
 
     @property
@@ -147,9 +155,13 @@ class Source:
             "location": self.location,
             "label": self.label,
             "subject": self.subject.to_dict(),
+            "subject_code": self.subject_code.to_dict(),
+            "semester": self.semester.to_dict(),
             "academic_year": self.academic_year.to_dict(),
             "document_date": self.document_date,
             "columns": [c.to_dict() for c in self.columns],
+            "component_label": self.component_label,
+            "component_weight": self.component_weight,
             "row_count": len(self.data_rows),
             "header_row": self.header_row,
             "preview": self.data_rows[:6],

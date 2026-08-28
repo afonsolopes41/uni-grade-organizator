@@ -9,7 +9,7 @@ from gradeorg.excel import SUBJECT_HEADER_ROW, build_workbook
 from gradeorg.models import RawTable
 
 SAFE_FUNCTIONS = {"IF", "IFERROR", "INDEX", "MATCH", "MAX", "COUNT", "COUNTIF",
-                  "COUNTIFS", "AVERAGE", "ROUND", "ISNUMBER", "NOT", "SUM"}
+                  "COUNTIFS", "AVERAGE", "ROUND", "ISNUMBER", "NOT", "SUM", "AND"}
 
 
 @pytest.fixture
@@ -29,7 +29,8 @@ def workbook(tmp_path):
 
 
 def test_tem_as_folhas_esperadas(workbook):
-    assert workbook.sheetnames == ["Resumo", "Análise Matemática", "Detalhe", "Avisos"]
+    assert workbook.sheetnames == ["Resumo", "Análise Matemática", "Médias",
+                                   "Detalhe", "Avisos"]
 
 
 def test_folha_da_uc_tem_as_epocas_e_a_melhor_nota(workbook):

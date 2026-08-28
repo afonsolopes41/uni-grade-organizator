@@ -69,6 +69,9 @@ confiança a cada conclusão.
 | Momentos de avaliação | Se `Teste 2` é o 2.º teste da 1.ª época ou o recurso — decidido pelos dados (ver abaixo) |
 | Nota final vs. componente | `Avaliação Final` > `Nota Final` > `Total`; `Projeto`, `Ex 4a`, `Participação` são componentes |
 | Unidade curricular | Pontua todos os pedaços do cabeçalho da página e fica com o melhor — a instituição, a legenda dos símbolos e as datas de revisão de nota ficam de fora |
+| Código da cadeira | `03713 - SGR - Segurança e Gestão de Redes` — é o que junta a mesma cadeira em pautas de línguas diferentes |
+| Semestre | `2º Semestre`, `2nd Semester`, `Semestre 2` |
+| Pautas de um componente só | `Teste 1 (30%)` no título: a coluna «Nota» é a nota *desse teste*, não a da cadeira |
 | Pautas em inglês | `Number`, `Name`, `Date`, `Grade`, `Test 1`, `Max1`, `1st Season`, `2nd Season`, `resit` |
 | Data do documento | O rodapé `2026/06/25` decide qual versão de uma pauta é a boa |
 
@@ -94,6 +97,26 @@ O segundo sinal é o que impede juntar colunas a sério: `Nota Final` e
 separadas mesmo com uma palavra larga do cabeçalho por cima. E o «quase» abre
 espaço para notas compostas como `RE m`, que ocupam a coluna e um bocadinho da
 seguinte, mas só em meia dúzia de linhas.
+
+## A mesma cadeira com dois nomes
+
+A pauta do teste vem em português e a da época em inglês. «Segurança e Gestão de
+Redes» e «Network Security and Management» não se parecem em nada — mas as duas
+trazem o código `03713`, e é por aí que se juntam.
+
+Quando duas pautas do mesmo código lhe dão nomes diferentes, a aplicação
+pergunta qual usar, com a opção de dizer que afinal **são cadeiras diferentes**.
+Sem código, a junção é pelo nome normalizado, como sempre foi.
+
+## Pautas que são só um componente
+
+Uma pauta intitulada `Teste 1 (30%)` tem uma coluna «Nota» que é a nota *desse
+teste*, não a nota final da cadeira. Tratá-la como nota final punha-a a competir
+com a pauta da época — e, sendo a mais recente, ganhava a errada.
+
+O peso no título (`30%`) é o sinal: abaixo de 100%, a pauta é de um componente.
+A coluna passa a chamar-se `Teste 1 (30%)`, entra como componente da época e a
+nota final continua a vir da pauta da época.
 
 ## Modalidades de avaliação
 
@@ -129,6 +152,8 @@ O que fica por decidir vira uma pergunta na página, com o palpite já marcado:
 
 - **Este segundo momento é a mesma época ou o recurso?** — com a evidência dos
   dados. É a pergunta que mais muda o resultado.
+- **Estas duas pautas são a mesma cadeira?** — quando partilham o código mas
+  dão-lhe nomes diferentes.
 - **Qual é a unidade curricular?** — quando o ficheiro não a identifica
   (`Notas_da_primeira_epoca.xlsx` não diz de que cadeira é).
 - **A que época correspondem estas notas?** — com a saída «não é uma época, é só
@@ -156,6 +181,29 @@ aluno fez — a melhor, nos casos raros em que tenha as duas.
 
 Quem só foi à 1.ª época fica com essa; quem foi à 2.ª fica com a melhor das
 duas. `RE` na 1.ª e `14` na 2.ª dá **14**.
+
+## Semestres, anos e médias
+
+Na página, a tabela **Unidades curriculares** pede o **ano** e o **semestre** de
+cada cadeira, e opcionalmente os **ECTS**. O semestre vem já preenchido quando a
+pauta o diz — só é preciso escrever o que falta.
+
+Com isso saem, por aluno:
+
+- a **média de cada semestre**,
+- a **média de cada ano**,
+- a **média final de curso**, com o arredondamento.
+
+Contam as cadeiras **aprovadas** com nota numérica — é o que vai para o diploma.
+Se os ECTS estiverem preenchidos em todas, as médias são **ponderadas por eles**;
+se faltar algum, é a média simples, e a página diz qual foi usada. Uma cadeira
+sem ano ou semestre entra na média final mas fica de fora das parciais, e é
+listada para se saber porquê.
+
+No Excel isto é a folha **Médias**, e é toda em fórmulas: cada cadeira tem duas
+colunas de apoio — quanto contribui e quanto pesa — e as médias são a divisão de
+uma soma pela outra. Corrigir uma nota na folha da UC atravessa o Resumo e chega
+às médias.
 
 ## Nota mínima por cadeira
 
@@ -192,6 +240,7 @@ Em qualquer dos casos fica registado um conflito, visível na página e na folha
 | Folha | O que traz |
 |---|---|
 | **Resumo** | Notas mínimas de todas as UCs, um aluno por linha, uma coluna por UC, média e nº de aprovações; gráfico da distribuição por escalão |
+| **Médias** | Médias por semestre, por ano e de curso, com as colunas de apoio agrupadas (podem ser recolhidas) |
 | **Uma por UC** | Nota mínima editável, as três épocas lado a lado, melhor nota, época da melhor, estado, origem, e os componentes (agrupados — dá para recolher) |
 | **Detalhe** | Uma linha por nota e por componente, com o ficheiro de onde veio |
 | **Avisos** | Conflitos e coisas a confirmar |
@@ -223,7 +272,7 @@ gradeorg/
   app.py           API JSON + página
   server.py        arranque e abertura do navegador
   web/             index.html · style.css · app.js
-tests/             200 testes
+tests/             229 testes
 ```
 
 ## Testes
@@ -237,8 +286,9 @@ Cobrem a reconstrução de colunas a partir das posições das palavras (com
 geometria fabricada, sem depender de nenhum PDF em disco), a leitura de notas em
 todos os formatos encontrados, as pautas em inglês, a detecção de colunas e
 épocas (incluindo os casos que enganam), as modalidades de avaliação
-(2.º teste contra recurso, duas vias na mesma época, nota mínima por cadeira), a
-junção de alunos, a escolha da melhor nota, os conflitos entre versões, o Excel
+(2.º teste contra recurso, duas vias na mesma época, pautas de um componente só,
+nota mínima por cadeira), a identidade das cadeiras pelo código, as médias por
+semestre, ano e curso, a junção de alunos, a escolha da melhor nota, os conflitos entre versões, o Excel
 gerado (valores, fórmulas e o conjunto de funções seguras) e o percurso completo
 pela API.
 

@@ -42,6 +42,10 @@ _HEADER_GAP = 7.0
 #: Abaixo desta sobreposicao, duas metades sob a mesma palavra de cabecalho sao
 #: a mesma coluna.
 _SAME_COLUMN_OVERLAP = 0.25
+#: Desvio tolerado no alinhamento da primeira coluna das linhas de dados.
+_ALIGN_TOLERANCE = 5.0
+#: Linhas em branco toleradas no meio do corpo da tabela.
+_MAX_ROW_SKIP = 2
 
 
 def parse_pdf(path: str) -> list:
@@ -216,26 +220,51 @@ def _looks_like_record(line: list) -> bool:
 
 
 def _find_data_lines(lines: list) -> list:
-    """Indices das linhas de alunos, usando o alinhamento a esquerda.
+    """Indices das linhas de alunos, pelo alinhamento da primeira coluna.
 
-    Todas as linhas de dados comecam na mesma coluna. Titulos, legendas e notas
+    Todas as linhas de dados comecam na mesma coluna; titulos, legendas e notas
     de rodape comecam noutro sitio -- e sao precisamente essas que, se
     entrassem no calculo das colunas, colavam umas as outras.
+
+    O alinhamento tanto pode ser a esquerda (nomes) como a direita (numeros de
+    aluno, onde um numero de cinco digitos comeca mais a direita do que um de
+    seis). Testam-se as duas margens e fica a que juntar mais linhas.
     """
     candidates = [i for i, line in enumerate(lines) if _looks_like_record(line)]
     if len(candidates) < 2:
         return []
 
-    def bucket(index: int) -> int:
-        return int(round(lines[index][0]["x0"] / 3.0))
+    best: list = []
+    for edge in ("x0", "x1"):
+        positions = sorted((lines[i][0][edge], i) for i in candidates)
+        start = 0
+        for end in range(len(positions) + 1):
+            if end < len(positions) and positions[end][0] - positions[start][0] <= _ALIGN_TOLERANCE:
+                continue
+            run = _longest_run(sorted(index for _, index in positions[start:end]))
+            if len(run) > len(best):
+                best = run
+            start = end
 
-    counts: dict = {}
-    for index in candidates:
-        counts[bucket(index)] = counts.get(bucket(index), 0) + 1
-    modal = max(counts, key=lambda k: (counts[k], -k))
+    return best if len(best) >= 2 else candidates
 
-    kept = [i for i in candidates if abs(bucket(i) - modal) <= 1]
-    return kept if len(kept) >= 2 else candidates
+
+def _longest_run(indices: list) -> list:
+    """Maior sequencia de linhas seguidas.
+
+    Os alunos ocupam linhas consecutivas. Sem isto, uma linha de titulo cujo
+    primeiro numero por acaso alinha com os numeros de aluno entrava no corpo da
+    tabela e estragava o calculo das colunas.
+    """
+    best: list = []
+    current: list = []
+    for index in indices:
+        if current and index - current[-1] > _MAX_ROW_SKIP:
+            if len(current) > len(best):
+                best = current
+            current = []
+        current.append(index)
+    return best if len(best) > len(current) else current
 
 
 def _column_boundaries(body: list) -> list:
@@ -406,17 +435,23 @@ def _text_segments(lines: list) -> list:
 # --------------------------------------------------------------------------
 
 def _merge_continuation_pages(tables: list) -> list:
-    """Junta paginas seguidas com o mesmo numero de colunas e sem cabecalho novo."""
+    """Junta paginas seguidas que sao a continuacao da mesma tabela.
+
+    A ultima pagina de uma pauta costuma ter menos alunos e, por isso, colunas
+    que so la aparecem preenchidas -- as duas paginas acabam com numeros de
+    colunas diferentes. Por isso a juncao alinha-se pelos nomes das colunas, e
+    nao pela contagem.
+    """
     if len(tables) <= 1:
         return tables
     merged = [tables[0]]
     for table in tables[1:]:
         prev = merged[-1]
-        same_shape = len(table.rows[0]) == len(prev.rows[0])
-        if same_shape and _repeats_header(prev.rows[0], table.rows[0]):
-            prev.rows.extend(table.rows[1:])
+        if _shares_header(prev.rows[0], table.rows[0]):
+            _append_aligned(prev, table.rows[0], table.rows[1:])
             prev.location += f", {table.location.replace('página ', '')}"
-        elif same_shape and not _looks_like_header(table.rows[0]):
+        elif (len(table.rows[0]) == len(prev.rows[0])
+              and not _looks_like_header(table.rows[0])):
             prev.rows.extend(table.rows)
             prev.location += f", {table.location.replace('página ', '')}"
         else:
@@ -424,8 +459,51 @@ def _merge_continuation_pages(tables: list) -> list:
     return merged
 
 
-def _repeats_header(first: list, other: list) -> bool:
-    return [c.lower() for c in first] == [c.lower() for c in other]
+def _shares_header(first: list, other: list) -> bool:
+    """Duas paginas da mesma tabela repetem os nomes das colunas."""
+    a = {c.strip().lower() for c in first if c.strip()}
+    b = {c.strip().lower() for c in other if c.strip()}
+    return len(a & b) >= 2
+
+
+def _append_aligned(table: RawTable, header: list, rows: list) -> None:
+    """Acrescenta linhas de outra pagina, encaixando-as pelo nome da coluna."""
+    destino = {c.strip().lower(): i for i, c in enumerate(table.rows[0]) if c.strip()}
+    mapping: dict = {}
+    usados: set = set()
+    for index, name in enumerate(header):
+        key = name.strip().lower()
+        if not key:
+            continue
+        if key in destino:
+            mapping[index] = destino[key]
+            usados.add(destino[key])
+
+    for index, name in enumerate(header):
+        key = name.strip().lower()
+        if not key or index in mapping:
+            continue
+        # O nome nao bate certo: a extraccao da outra pagina pode ter juntado
+        # duas colunas ("Nota desiste"). Nesse caso vale a posicao, e so se cria
+        # uma coluna nova se a posicao ja estiver ocupada por outra coisa.
+        if index < len(table.rows[0]) and index not in usados:
+            mapping[index] = index
+            usados.add(index)
+            continue
+        table.rows[0].append(name)
+        for existing in table.rows[1:]:
+            existing.append("")
+        mapping[index] = len(table.rows[0]) - 1
+        usados.add(mapping[index])
+
+    width = len(table.rows[0])
+    for row in rows:
+        nova = [""] * width
+        for index, value in enumerate(row):
+            target = mapping.get(index)
+            if target is not None:
+                nova[target] = value
+        table.rows.append(nova)
 
 
 def _looks_like_header(row: list) -> bool:

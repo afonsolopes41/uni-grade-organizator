@@ -33,6 +33,7 @@ from .normalize import (
     clean_text,
     name_tokens,
     norm_name,
+    norm_text,
     parse_grade,
     parse_student_id,
     round_grade,
@@ -50,8 +51,17 @@ class Settings:
     pass_mark: float = DEFAULT_PASS_MARK
     #: Nota minima por UC -- cada cadeira tem a sua.
     subject_pass_marks: dict = field(default_factory=dict)
+    #: Nome escolhido para cada grupo de pautas da mesma cadeira, ou "__split__"
+    #: quando o utilizador diz que afinal sao cadeiras diferentes.
+    subject_aliases: dict = field(default_factory=dict)
+    #: Ano, semestre e ECTS de cada cadeira -- e o que permite as medias por
+    #: semestre, por ano e de fim de curso.
+    subject_curriculum: dict = field(default_factory=dict)
     scale: float = DEFAULT_SCALE
     merge_by_name: bool = True
+
+    def curriculum_for(self, subject: str) -> dict:
+        return dict(self.subject_curriculum.get(subject) or {})
 
     def pass_mark_for(self, subject: Optional[str]) -> float:
         """A nota minima desta UC, ou a de omissao se nao tiver uma."""
@@ -79,14 +89,148 @@ class Settings:
                 settings.subject_pass_marks[subject] = float(value)
             except (TypeError, ValueError):
                 continue
+        settings.subject_aliases = dict(data.get("subject_aliases") or {})
+        for subject, meta in (data.get("subject_curriculum") or {}).items():
+            entry = dict(settings.subject_curriculum.get(subject) or {})
+            for key in ("year", "semester", "ects"):
+                if key not in (meta or {}):
+                    continue
+                value = meta[key]
+                if value in (None, ""):
+                    entry.pop(key, None)
+                    continue
+                try:
+                    entry[key] = float(value) if key == "ects" else int(value)
+                except (TypeError, ValueError):
+                    continue
+            if entry:
+                settings.subject_curriculum[subject] = entry
+            else:
+                settings.subject_curriculum.pop(subject, None)
         settings.merge_by_name = bool(data.get("merge_by_name", True))
         return settings
 
     def to_dict(self) -> dict:
         return {"pass_mark": self.pass_mark,
                 "subject_pass_marks": dict(self.subject_pass_marks),
+                "subject_aliases": dict(self.subject_aliases),
+                "subject_curriculum": {k: dict(v) for k, v in
+                                       self.subject_curriculum.items()},
                 "scale": self.scale,
                 "merge_by_name": self.merge_by_name}
+
+
+# --------------------------------------------------------------------------
+# Identidade das cadeiras
+# --------------------------------------------------------------------------
+
+SPLIT = "__split__"
+
+
+def subject_group_key(source) -> str:
+    """Chave que junta pautas da mesma cadeira.
+
+    O codigo da UC ("03713") e o unico sinal fiavel quando a mesma cadeira tem
+    pautas em linguas diferentes -- "Segurança e Gestão de Redes" e "Network
+    Security and Management" nao se parecem em nada.
+    """
+    if source.subject_code.value and source.subject_code.confidence >= 0.5:
+        return f"codigo:{norm_text(source.subject_code.value)}"
+    if source.subject.value:
+        return f"nome:{norm_name(source.subject.value)}"
+    return f"ficheiro:{source.id}"
+
+
+def detected_semesters(sources: list, subject_names: dict) -> dict:
+    """Semestre que as proprias pautas indicam, por cadeira."""
+    found: dict = {}
+    for source in sources:
+        subject = subject_names.get(source.id)
+        if subject and source.semester.value and subject not in found:
+            try:
+                found[subject] = int(source.semester.value)
+            except (TypeError, ValueError):
+                continue
+    return found
+
+
+def effective_curriculum(subject: str, settings: Settings, detected: dict) -> dict:
+    """Ano, semestre e ECTS de uma cadeira.
+
+    O que o utilizador escreveu manda; o semestre que a pauta indica serve de
+    valor de partida, para nao ser preciso repetir o que ja la esta escrito.
+    """
+    meta = settings.curriculum_for(subject)
+    if meta.get("semester") is None and subject in detected:
+        meta["semester"] = detected[subject]
+    return meta
+
+
+def resolve_subjects(sources: list, settings: Settings):
+    """Decide o nome de cada cadeira e quais pautas pertencem a mesma.
+
+    Devolve ``({source_id: nome}, [grupos com nomes diferentes])``.
+    """
+    groups: dict = {}
+    for source in sources:
+        groups.setdefault(subject_group_key(source), []).append(source)
+
+    names: dict = {}
+    merged: list = []
+    for key, group in groups.items():
+        candidates = [s.subject.value for s in group if s.subject.value]
+        distinct = sorted(set(candidates), key=lambda n: (-len(n), n))
+        choice = settings.subject_aliases.get(key)
+
+        if choice == SPLIT or not distinct:
+            # Cada pauta fica com o seu nome.
+            for source in group:
+                names[source.id] = source.subject.value or f"(UC de {source.filename})"
+            continue
+
+        canonical = choice if choice in distinct else distinct[0]
+        for source in group:
+            names[source.id] = canonical
+
+        if len(distinct) > 1:
+            merged.append({
+                "key": key,
+                "code": group[0].subject_code.value,
+                "names": distinct,
+                "chosen": canonical,
+                "confirmed": bool(choice),
+                "files": sorted({s.filename for s in group}),
+            })
+    return names, merged
+
+
+def merge_questions(sources: list, settings: Settings) -> list:
+    """Pergunta se duas pautas com o mesmo codigo sao mesmo a mesma cadeira."""
+    from .models import Question
+
+    _, merged = resolve_subjects(sources, settings)
+    questions = []
+    for merge in merged:
+        if merge["confirmed"]:
+            continue
+        nomes = " e ".join(f"«{n}»" for n in merge["names"])
+        questions.append(Question(
+            id=f"merge:{merge['key']}",
+            type="subject_merge",
+            source_id=None,
+            title=f"{nomes} são a mesma cadeira?",
+            detail=("Têm o mesmo código " + f"({merge['code']}) " if merge["code"]
+                    else "Parecem a mesma cadeira ")
+                   + "mas as pautas dão-lhes nomes diferentes: "
+                   + ", ".join(merge["files"]) + ".",
+            options=[{"value": name, "label": f"Sim — usar «{name}»"}
+                     for name in merge["names"]]
+                    + [{"value": SPLIT, "label": "Não, são cadeiras diferentes",
+                        "hint": "cada pauta fica com o seu nome"}],
+            default=merge["chosen"],
+            severity="warning",
+        ))
+    return questions
 
 
 # --------------------------------------------------------------------------
@@ -105,14 +249,17 @@ class RowRecord:
     entries: list = field(default_factory=list)   # list[GradeEntry]
 
 
-def extract_records(sources: list, settings: Settings) -> list:
+def extract_records(sources: list, settings: Settings,
+                    subject_names: Optional[dict] = None) -> list:
     """Le cada linha de cada Source e transforma-a num RowRecord."""
     records = []
+    subject_names = subject_names or {}
     for source in sources:
         name_column = next((c for c in source.columns if c.role == ROLE_NAME), None)
         id_column = next((c for c in source.columns if c.role == ROLE_ID), None)
         grade_columns = [c for c in source.columns if c.role == ROLE_GRADE]
-        subject = source.subject.value or f"(UC de {source.filename})"
+        subject = (subject_names.get(source.id) or source.subject.value
+                   or f"(UC de {source.filename})")
 
         for row_index, row in enumerate(source.data_rows):
             def cell(column):
@@ -365,7 +512,9 @@ def _priority_reason(entries: list) -> str:
 def consolidate(sources: list, settings: Optional[Settings] = None) -> dict:
     """Produz a listagem consolidada, pronta para a web e para o Excel."""
     settings = settings or Settings()
-    records = extract_records(sources, settings)
+    subject_names, merged_subjects = resolve_subjects(sources, settings)
+    semestres = detected_semesters(sources, subject_names)
+    records = extract_records(sources, settings, subject_names)
     clusters = cluster_records(records, settings)
 
     conflicts: list = []
@@ -476,7 +625,7 @@ def consolidate(sources: list, settings: Optional[Settings] = None) -> dict:
                     "other_versions": [
                         {"label": e.grade.label, "source": e.source_label,
                          "column": e.column_header}
-                        for e in ranked[1:]
+                        for e in ranked[1:] if not e.grade.is_empty
                     ],
                     # Outras vias de avaliacao do mesmo ficheiro que o aluno
                     # tambem tem preenchidas (raro: normalmente so faz uma).
@@ -497,7 +646,9 @@ def consolidate(sources: list, settings: Optional[Settings] = None) -> dict:
                 "approved": _approved(best, settings, subject),
             }
 
+        averages = _student_averages(subjects, settings, semestres)
         students.append({
+            "averages": averages,
             "key": _student_key(student_id, name),
             "name": name or (f"(sem nome) {student_id}" if student_id else "(sem nome)"),
             "student_id": student_id,
@@ -521,6 +672,22 @@ def consolidate(sources: list, settings: Optional[Settings] = None) -> dict:
             "severity": "info",
         })
 
+    curriculum = {s: effective_curriculum(s, settings, semestres) for s in subject_names}
+    for merge in merged_subjects:
+        if not merge["confirmed"]:
+            warnings.append({
+                "type": "cadeiras juntadas",
+                "student": "",
+                "subject": merge["chosen"],
+                "detail": "As pautas " + " e ".join(f"«{f}»" for f in merge["files"])
+                          + (f" têm o mesmo código ({merge['code']})" if merge["code"]
+                             else " parecem ser da mesma cadeira")
+                          + " mas dão-lhe nomes diferentes: "
+                          + "; ".join(f"«{n}»" for n in merge["names"])
+                          + f". Foram tratadas como uma só, com o nome «{merge['chosen']}».",
+                "severity": "info",
+            })
+
     return {
         "students": students,
         "subjects": subject_names,
@@ -528,6 +695,8 @@ def consolidate(sources: list, settings: Optional[Settings] = None) -> dict:
         "warnings": warnings,
         "settings": settings.to_dict(),
         "pass_marks": pass_marks,
+        "curriculum": curriculum,
+        "merged_subjects": merged_subjects,
         "stats": _stats(students, subject_names, settings),
     }
 
@@ -557,6 +726,66 @@ def _approved(grade: Optional[Grade], settings: Settings, subject: Optional[str]
     if grade.status in ("REPROVADO", "FALTOU", "DESISTIU", "NAO_ADMITIDO"):
         return False
     return None
+
+
+def _weighted_mean(entries: list):
+    """Media das notas, ponderada por ECTS quando todas as cadeiras os tem."""
+    if not entries:
+        return None
+    credits = [e for _, e in entries]
+    if all(c for c in credits):
+        total = sum(credits)
+        return {"value": round(sum(v * c for v, c in entries) / total, 2),
+                "count": len(entries), "ects": round(total, 1), "weighted": True}
+    return {"value": round(sum(v for v, _ in entries) / len(entries), 2),
+            "count": len(entries), "ects": None, "weighted": False}
+
+
+def _student_averages(subjects: dict, settings: Settings, detected: dict) -> dict:
+    """Medias por semestre, por ano e de fim de curso.
+
+    Contam as cadeiras aprovadas com nota numerica -- e o que vai para o
+    diploma. Uma cadeira sem ano ou semestre entra na media final mas nao nas
+    parciais, e fica assinalada para o utilizador poder preencher.
+    """
+    by_semester: dict = {}
+    by_year: dict = {}
+    todas: list = []
+    incompletas: list = []
+
+    for subject, data in subjects.items():
+        grade = data["best"]
+        if data["approved"] is not True or grade is None or grade.value is None:
+            continue
+        meta = effective_curriculum(subject, settings, detected)
+        value = _to_scale(grade, settings.scale)
+        ects = meta.get("ects")
+        todas.append((value, ects))
+
+        year, semester = meta.get("year"), meta.get("semester")
+        if year is None or semester is None:
+            incompletas.append(subject)
+            continue
+        by_semester.setdefault((year, semester), []).append((value, ects))
+        by_year.setdefault(year, []).append((value, ects))
+
+    semesters = []
+    for (year, semester) in sorted(by_semester):
+        entry = _weighted_mean(by_semester[(year, semester)])
+        entry.update({"year": year, "semester": semester})
+        semesters.append(entry)
+
+    years = []
+    for year in sorted(by_year):
+        entry = _weighted_mean(by_year[year])
+        entry["year"] = year
+        years.append(entry)
+
+    final = _weighted_mean(todas)
+    if final:
+        final["rounded"] = round_grade(final["value"])
+    return {"semesters": semesters, "years": years, "final": final,
+            "missing_curriculum": sorted(incompletas)}
 
 
 def _student_key(student_id: Optional[str], name: str) -> str:
@@ -627,6 +856,7 @@ def to_json(result: dict) -> dict:
                 "approved": data["approved"],
             }
         students.append({
+            "averages": student["averages"],
             "key": student["key"],
             "name": student["name"],
             "student_id": student["student_id"],
@@ -642,5 +872,7 @@ def to_json(result: dict) -> dict:
         "warnings": result["warnings"],
         "settings": result["settings"],
         "pass_marks": result.get("pass_marks", {}),
+        "curriculum": result.get("curriculum", {}),
+        "merged_subjects": result.get("merged_subjects", []),
         "stats": result["stats"],
     }

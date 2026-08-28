@@ -183,6 +183,7 @@ function renderUploadErrors(rejected) {
 function renderReview() {
   if (!state.review) return;
   renderQuestions();
+  renderCurriculum();
   renderSources();
   $('pass-mark').value = state.review.settings.pass_mark;
   $('merge-by-name').checked = state.review.settings.merge_by_name;
@@ -290,6 +291,15 @@ async function saveAnswers(answers) {
   } catch (error) { toast(error.message, true); } finally { busy(false); }
 }
 
+async function saveSettings(settings) {
+  busy(true, 'A aplicar…');
+  try {
+    state.review = await postJSON('/api/answers', { settings });
+    state.results = null;
+    renderReview();
+  } catch (error) { toast(error.message, true); } finally { busy(false); }
+}
+
 async function saveOverride(sourceId, columnIndex, spec) {
   busy(true, 'A aplicar…');
   try {
@@ -298,6 +308,87 @@ async function saveOverride(sourceId, columnIndex, spec) {
     state.results = null;
     renderReview();
   } catch (error) { toast(error.message, true); } finally { busy(false); }
+}
+
+function renderCurriculum() {
+  const data = state.review;
+  const subjects = data.subjects || [];
+  if (!subjects.length) { $('curriculum').innerHTML = ''; return; }
+
+  const curriculum = data.curriculum || {};
+  const detected = data.detected_semesters || {};
+  const marks = data.pass_marks || {};
+  const codes = data.subject_codes || {};
+  const porPreencher = subjects.filter((s) => {
+    const meta = curriculum[s] || {};
+    return meta.year == null || meta.semester == null;
+  }).length;
+
+  const linhas = subjects.map((subject) => {
+    const meta = curriculum[subject] || {};
+    const semestre = meta.semester ?? (detected[subject] ? Number(detected[subject]) : null);
+    return `
+      <tr>
+        <td>
+          <div class="uc-nome">${escapeHtml(subject)}</div>
+          ${codes[subject] ? `<div class="uc-codigo">${escapeHtml(codes[subject])}</div>` : ''}
+        </td>
+        <td class="num ${meta.year == null ? 'falta' : ''}">
+          <select data-uc="${escapeHtml(subject)}" data-campo="year">
+            <option value="">—</option>
+            ${[1, 2, 3, 4, 5].map((y) =>
+              `<option value="${y}" ${meta.year === y ? 'selected' : ''}>${y}.º</option>`).join('')}
+          </select>
+        </td>
+        <td class="num ${semestre == null ? 'falta' : ''}">
+          <select data-uc="${escapeHtml(subject)}" data-campo="semester">
+            <option value="">—</option>
+            ${[1, 2].map((n) =>
+              `<option value="${n}" ${semestre === n ? 'selected' : ''}>${n}.º</option>`).join('')}
+          </select>
+        </td>
+        <td class="num">
+          <input type="number" min="0" max="60" step="0.5" placeholder="—"
+                 value="${meta.ects ?? ''}" data-uc="${escapeHtml(subject)}" data-campo="ects">
+        </td>
+        <td class="num">
+          <input type="number" min="0" max="20" step="0.5"
+                 value="${marks[subject] ?? data.settings.pass_mark}"
+                 data-uc="${escapeHtml(subject)}" data-campo="pass_mark">
+        </td>
+      </tr>`;
+  }).join('');
+
+  $('curriculum').innerHTML = `
+    <div class="card">
+      <h2 class="section-title">Unidades curriculares</h2>
+      <p class="section-lead">
+        Diga a que ano e semestre pertence cada cadeira — é isso que permite as
+        médias por semestre, por ano e a média final de curso. Os ECTS são
+        opcionais: se os preencher em todas, as médias passam a ser ponderadas
+        por eles; se não, é a média simples.
+        ${porPreencher ? `<b>Faltam o ano ou o semestre em ${porPreencher} cadeira(s).</b>` : ''}
+      </p>
+      <table class="uc-table">
+        <thead><tr>
+          <th>Unidade curricular</th><th class="num">Ano</th><th class="num">Semestre</th>
+          <th class="num">ECTS</th><th class="num">Nota mínima</th>
+        </tr></thead>
+        <tbody>${linhas}</tbody>
+      </table>
+    </div>`;
+
+  $('curriculum').querySelectorAll('[data-uc]').forEach((campo) => {
+    campo.addEventListener('change', () => {
+      const subject = campo.dataset.uc;
+      const valor = campo.value.trim();
+      if (campo.dataset.campo === 'pass_mark') {
+        saveSettings({ subject_pass_marks: { [subject]: valor === '' ? '' : parseFloat(valor) } });
+      } else {
+        saveSettings({ subject_curriculum: { [subject]: { [campo.dataset.campo]: valor } } });
+      }
+    });
+  });
 }
 
 const ROLE_LABELS = {
@@ -369,8 +460,13 @@ function renderSources() {
             ${source.academic_year.value ? `<span class="badge">${escapeHtml(source.academic_year.value)}</span>` : ''}
             ${source.document_date ? `<span class="badge">documento de ${escapeHtml(source.document_date)}</span>` : ''}
             <span class="badge">${source.row_count} alunos</span>
+            ${source.component_label
+              ? `<span class="badge amber">só «${escapeHtml(source.component_label)}» (${source.component_weight}%)</span>`
+              : ''}
           </div>
         </div>
+        ${(source.notes || []).length ? `<p class="source-note">${
+          source.notes.map(escapeHtml).join('<br>')}</p>` : ''}
         <table class="col-table">
           <thead><tr>
             <th>Coluna</th><th>É</th><th>Época</th><th>Tipo</th><th>Momento</th>
@@ -617,6 +713,7 @@ function detailRow(student, subjects) {
       </div>`;
   }).join('');
 
+  const medias = mediasCard(student);
   const alternates = student.all_names.length > 1 || student.all_ids.length > 1 ? `
     <div class="detail-card">
       <h4>Identificação</h4>
@@ -627,7 +724,41 @@ function detailRow(student, subjects) {
     </div>` : '';
 
   return `<tr class="detail-row"><td colspan="${subjects.length + 4}">
-    <div class="detail-inner">${cards}${alternates}</div></td></tr>`;
+    <div class="detail-inner">${medias}${cards}${alternates}</div></td></tr>`;
+}
+
+function mediasCard(student) {
+  const media = student.averages;
+  if (!media || (!media.final && !media.semesters.length)) return '';
+
+  const num = (valor) => String(valor).replace('.', ',');
+  const linha = (rotulo, entrada) => `
+    <div class="item">${escapeHtml(rotulo)}: <b>${num(entrada.value)}</b>
+      <span class="components">(${entrada.count} UC${entrada.count === 1 ? '' : 's'}${
+        entrada.weighted ? `, ${num(entrada.ects)} ECTS` : ''})</span></div>`;
+
+  const semestres = media.semesters.map((s) =>
+    linha(`${s.year}.º ano · ${s.semester}.º sem.`, s)).join('');
+  const anos = media.years.map((a) => linha(`${a.year}.º ano`, a)).join('');
+
+  return `
+    <div class="detail-card">
+      <h4>Médias</h4>
+      <div class="medias">
+        ${semestres}${anos}
+        ${media.final ? `<div class="item final">Média de curso:
+          <b>${num(media.final.value)}</b> (arredondada: ${media.final.rounded})</div>` : ''}
+      </div>
+      <div class="source-note">
+        Contam as cadeiras aprovadas com nota numérica.
+        ${media.final && media.final.weighted
+          ? 'Ponderadas por ECTS.'
+          : 'Média simples — preencha os ECTS de todas as cadeiras para ponderar.'}
+        ${media.missing_curriculum.length
+          ? `<br>Sem ano/semestre, por isso fora das médias parciais: ${
+              media.missing_curriculum.map(escapeHtml).join(' · ')}` : ''}
+      </div>
+    </div>`;
 }
 
 function renderNotices() {
@@ -742,14 +873,6 @@ function setup() {
     renderTable();
   });
 
-  const saveSettings = async (settings) => {
-    busy(true, 'A aplicar…');
-    try {
-      state.review = await postJSON('/api/answers', { settings });
-      state.results = null;
-      renderReview();
-    } catch (error) { toast(error.message, true); } finally { busy(false); }
-  };
   $('pass-mark').addEventListener('change', (event) =>
     saveSettings({ pass_mark: parseFloat(event.target.value) }));
   $('merge-by-name').addEventListener('change', (event) =>

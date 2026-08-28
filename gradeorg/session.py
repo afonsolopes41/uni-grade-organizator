@@ -18,9 +18,36 @@ import threading
 from dataclasses import dataclass, field
 from typing import Optional
 
-from .consolidate import Settings, consolidate, to_json
+from .consolidate import (
+    Settings, consolidate, detected_semesters, effective_curriculum,
+    merge_questions, resolve_subjects, to_json,
+)
 from .detect import apply_answers, apply_column_overrides, build_questions, build_source
 from .parsers import parse_file
+
+
+#: Definicoes cujo valor e um dicionario por cadeira: chegam da interface uma
+#: cadeira de cada vez, e uma substituicao simples apagava as restantes.
+_PER_SUBJECT_SETTINGS = ("subject_pass_marks", "subject_aliases", "subject_curriculum")
+
+
+def _merge_settings(current: dict, incoming: dict) -> dict:
+    """Junta definicoes novas as antigas sem perder o que ja la estava."""
+    merged = dict(current)
+    for key, value in incoming.items():
+        if key in _PER_SUBJECT_SETTINGS and isinstance(value, dict):
+            combined = dict(merged.get(key) or {})
+            for subject, entry in value.items():
+                if isinstance(entry, dict):
+                    inner = dict(combined.get(subject) or {})
+                    inner.update(entry)
+                    combined[subject] = inner
+                else:
+                    combined[subject] = entry
+            merged[key] = combined
+        else:
+            merged[key] = value
+    return merged
 
 
 @dataclass
@@ -120,11 +147,29 @@ class Session:
         """Grava as escolhas da interface e marca a deteccao para refazer."""
         with self._lock:
             if answers is not None:
+                aliases = {}
                 for key, value in answers.items():
+                    # As respostas sobre juntar cadeiras vivem nas definicoes,
+                    # porque valem para um grupo de pautas e nao para uma fonte.
+                    if key.startswith("merge:"):
+                        aliases[key[len("merge:"):]] = value
+                        if value in (None, ""):
+                            self.answers.pop(key, None)
+                        else:
+                            self.answers[key] = value
+                        continue
                     if value in (None, ""):
                         self.answers.pop(key, None)
                     else:
                         self.answers[key] = value
+                if aliases:
+                    merged = dict(self.settings.subject_aliases)
+                    for key, value in aliases.items():
+                        if value in (None, ""):
+                            merged.pop(key, None)
+                        else:
+                            merged[key] = value
+                    self.settings.subject_aliases = merged
             if overrides:
                 for source_id, columns in overrides.items():
                     target = self.overrides.setdefault(source_id, {})
@@ -134,15 +179,26 @@ class Session:
                         else:
                             target[str(column_index)] = spec
             if settings:
-                self.settings = Settings.from_dict({**self.settings.to_dict(), **settings})
+                self.settings = Settings.from_dict(
+                    _merge_settings(self.settings.to_dict(), settings))
             self._dirty = True
 
     def open_questions(self) -> list:
-        return [q for q in build_questions(self.sources) if not self.answers.get(q.id)]
+        questions = build_questions(self.sources)
+        questions += merge_questions(self.sources, self.settings)
+        return [q for q in questions if not self.answers.get(q.id)]
 
     # -- resultados --------------------------------------------------------
 
     def review(self) -> dict:
+        names, _ = resolve_subjects(self.sources, self.settings)
+        subjects = sorted(set(names.values()))
+        semesters = detected_semesters(self.sources, names)
+        codes: dict = {}
+        for source in self.sources:
+            subject = names.get(source.id)
+            if subject and source.subject_code.value:
+                codes.setdefault(subject, source.subject_code.value)
         return {
             "files": [f.to_dict() for f in self.files],
             "sources": [s.to_dict() for s in self.sources],
@@ -150,6 +206,13 @@ class Session:
             "answers": self.answers,
             "overrides": self.overrides,
             "settings": self.settings.to_dict(),
+            "subjects": subjects,
+            "subject_codes": codes,
+            # Semestre que a própria pauta indica, para preencher por omissão.
+            "detected_semesters": semesters,
+            "curriculum": {s: effective_curriculum(s, self.settings, semesters)
+                           for s in subjects},
+            "pass_marks": {s: self.settings.pass_mark_for(s) for s in subjects},
         }
 
     def raw_result(self) -> dict:
