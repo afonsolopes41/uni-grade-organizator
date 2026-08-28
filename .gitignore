@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# Resultados da construção do executável
+build/
+dist/
+*.spec.bak
+
+# Pautas reais usadas nos testes manuais: são dados pessoais de alunos e não
+# devem ir para o repositório.
+samples_local/
+*.xlsx
+!tests/**/*.xlsx

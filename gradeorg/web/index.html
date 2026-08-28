@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Organizador de Notas</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎓</text></svg>">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark">🎓</span>
+    <div>
+      <h1>Organizador de Notas</h1>
+      <p>Junta pautas em PDF, Excel ou texto e fica com a melhor nota de cada aluno.</p>
+    </div>
+  </div>
+  <nav class="steps" id="steps">
+    <button class="step is-active" data-step="upload"><b>1</b> Ficheiros</button>
+    <button class="step" data-step="review"><b>2</b> Confirmar</button>
+    <button class="step" data-step="results"><b>3</b> Resultados</button>
+  </nav>
+</header>
+
+<main>
+
+<!-- ------------------------------------------------------------------ -->
+<section class="panel" id="panel-upload">
+  <div class="dropzone" id="dropzone" tabindex="0" role="button"
+       aria-label="Carregar ficheiros de notas">
+    <div class="dropzone-icon">📄</div>
+    <h2>Arraste as pautas para aqui</h2>
+    <p>ou <button type="button" class="link" id="pick">escolha os ficheiros</button></p>
+    <p class="hint">PDF · XLSX · CSV · TXT — pode misturar formatos e épocas diferentes</p>
+    <input type="file" id="file-input" multiple hidden
+           accept=".pdf,.xlsx,.xlsm,.xltx,.csv,.tsv,.txt">
+  </div>
+
+  <div id="file-list" class="file-list"></div>
+  <div id="upload-errors"></div>
+
+  <div class="actions" id="upload-actions" hidden>
+    <button class="btn btn-ghost" id="btn-reset">Limpar tudo</button>
+    <button class="btn btn-primary" id="btn-to-review">Continuar →</button>
+  </div>
+</section>
+
+<!-- ------------------------------------------------------------------ -->
+<section class="panel" id="panel-review" hidden>
+  <div id="questions"></div>
+  <div id="curriculum"></div>
+
+  <details class="advanced" id="advanced">
+    <summary>
+      <span>Ajustes avançados</span>
+      <small>o que foi detectado em cada ficheiro, coluna a coluna</small>
+    </summary>
+    <div class="settings-grid">
+      <label>
+        <span>Nota mínima (por omissão)</span>
+        <input type="number" id="pass-mark" min="0" max="20" step="0.5" value="9.5">
+      </label>
+      <label class="check">
+        <input type="checkbox" id="merge-by-name" checked>
+        <span>Juntar alunos com o mesmo nome, mesmo que o número não bata certo</span>
+      </label>
+    </div>
+    <div id="sources"></div>
+  </details>
+
+  <div class="actions">
+    <button class="btn btn-ghost" id="btn-back-upload">← Ficheiros</button>
+    <button class="btn btn-primary" id="btn-to-results">Ver notas consolidadas →</button>
+  </div>
+</section>
+
+<!-- ------------------------------------------------------------------ -->
+<section class="panel" id="panel-results" hidden>
+  <div class="stats" id="stats"></div>
+  <div id="pending-warning"></div>
+  <div id="pass-marks"></div>
+
+  <div class="toolbar">
+    <div class="search">
+      <input type="search" id="search" placeholder="Procurar aluno por nome ou número…"
+             autocomplete="off">
+    </div>
+    <div class="filters" id="subject-filters"></div>
+    <div class="toolbar-right">
+      <label class="check compact">
+        <input type="checkbox" id="only-selected">
+        <span>Só os seleccionados (<b id="selected-count">0</b>)</span>
+      </label>
+      <button class="btn btn-ghost btn-sm" id="btn-select-visible">Seleccionar visíveis</button>
+      <button class="btn btn-ghost btn-sm" id="btn-clear-selection">Limpar selecção</button>
+      <button class="btn btn-primary" id="btn-export">⬇ Descarregar Excel</button>
+    </div>
+  </div>
+
+  <div class="table-wrap">
+    <table class="grades" id="grades-table">
+      <thead id="grades-head"></thead>
+      <tbody id="grades-body"></tbody>
+    </table>
+  </div>
+  <p class="empty" id="no-rows" hidden>Nenhum aluno corresponde ao filtro.</p>
+
+  <div id="notices"></div>
+
+  <div class="actions">
+    <button class="btn btn-ghost" id="btn-back-review">← Confirmar</button>
+    <button class="btn btn-ghost" id="btn-add-more">+ Juntar mais ficheiros</button>
+  </div>
+</section>
+
+</main>
+
+<div class="toast" id="toast" hidden></div>
+<div class="busy" id="busy" hidden><div class="spinner"></div><p id="busy-text">A ler…</p></div>
+
+<script src="app.js"></script>
+</body>
+</html>
