@@ -57,6 +57,22 @@ def norm_header(value: Any) -> str:
     return _NON_ALNUM_RE.sub(" ", norm_text(value)).strip()
 
 
+_GLUED_RE = re.compile(r"(?<=[a-z])(?=\d)|(?<=\d)(?=[a-z])")
+
+
+def split_glued(text: str) -> str:
+    """Separa letras de digitos: "Max1" -> "max 1", "Epoca1" -> "epoca 1"."""
+    return _WS_RE.sub(" ", _GLUED_RE.sub(" ", text)).strip()
+
+
+def header_variants(value: Any) -> list:
+    """As duas formas de um cabecalho: como esta, e com letras e digitos
+    separados. Ha pautas que escrevem "Test 1" e outras "Test1"."""
+    header = norm_header(value)
+    glued = split_glued(header)
+    return [header] if glued == header else [header, glued]
+
+
 # Particulas que nao contam para comparar nomes de pessoas.
 _NAME_PARTICLES = {"de", "da", "do", "das", "dos", "e", "del", "la", "van", "von", "y"}
 
@@ -230,6 +246,19 @@ _STATUS_TOKENS = {
     "desistente": "DESISTIU",
     "anulada": "DESISTIU",
     "anulado": "DESISTIU",
+    "d": "DESISTIU",
+    "withdrawal": "DESISTIU",
+    "withdrawn": "DESISTIU",
+    # Pautas em ingles: f = falta de comparencia, m = nao atingiu a nota minima,
+    # NA = nao avaliado, RE = reprovado.
+    "m": "REPROVADO",
+    "failed": "REPROVADO",
+    "fail": "REPROVADO",
+    "not assessed": "NAO_ADMITIDO",
+    "n a": "NAO_ADMITIDO",
+    "absent": "FALTOU",
+    "passed": "APROVADO",
+    "pass": "APROVADO",
 }
 
 _EMPTY_TOKENS = {"", "-", "--", "---", "n/d", "nd", "s/n", "sn", ".", "/", "x"}
@@ -289,6 +318,14 @@ def parse_grade(value: Any, scale: float = 20.0) -> Grade:
     status = _STATUS_TOKENS.get(compact) or _STATUS_TOKENS.get(compact.replace(" ", ""))
     if status:
         return Grade(status=status, raw=raw, scale=scale)
+
+    # Estados compostos: "RE m" e reprovado por nao ter atingido a nota minima.
+    tokens = compact.split()
+    if 1 < len(tokens) <= 3:
+        mapped = [_STATUS_TOKENS.get(t) for t in tokens]
+        if all(mapped):
+            worst = min(mapped, key=lambda st: STATUS_ORDER.index(st))
+            return Grade(status=worst, raw=raw, scale=scale)
 
     # Coisas como "RE (12,5)" ou "Aprovado 14".
     inner = re.search(r"\d+(?:[.,]\d+)?", raw)

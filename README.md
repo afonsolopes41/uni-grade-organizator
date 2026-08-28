@@ -60,14 +60,16 @@ confiança a cada conclusão.
 
 | O que descobre | Como |
 |---|---|
-| Onde começa a tabela | Pontua cada linha inicial: cabeçalhos ganham pontos, números perdem |
-| Colunas de um PDF sem grelha | Reconstrói-as pelas posições das palavras — as colunas de um PDF estão alinhadas mesmo sem linhas desenhadas |
-| Nome e número de aluno | Cabeçalho (`Nome`, `Nº Aluno`, `Número`…) e, se não bastar, a forma dos valores |
-| Notas | Números, mas também `RE`, `NA`, `FA`, `Aprovado`, `-`, `13,25`, `13.25`, `85%`, `15/20` |
+| Onde começa a tabela | As linhas de alunos estão todas alinhadas pelo mesmo x; títulos e legendas não |
+| Colunas de um PDF | Tenta a grelha desenhada **e** a reconstrução por posições, e fica com a que produzir a tabela mais cheia |
+| Cabeçalhos em várias linhas | `Test 1` numa linha e `30%` na de baixo são o mesmo cabeçalho |
+| Nome e número de aluno | Cabeçalho (`Nome`, `Nº Aluno`, `Number`, `Name`…) e, se não bastar, a forma dos valores |
+| Notas | Números, mas também `RE`, `NA`, `FA`, `f`, `m`, `d`, `RE m`, `Aprovado`, `-`, `13,25`, `13.25`, `85%`, `15/20` |
 | Épocas | `2.ª Época`, `Recurso`, `1E`, `Época Especial`; e blocos de colunas seguidas |
 | Momentos de avaliação | Se `Teste 2` é o 2.º teste da 1.ª época ou o recurso — decidido pelos dados (ver abaixo) |
 | Nota final vs. componente | `Avaliação Final` > `Nota Final` > `Total`; `Projeto`, `Ex 4a`, `Participação` são componentes |
-| Unidade curricular | Título do documento, nome da folha, sigla no nome do ficheiro |
+| Unidade curricular | Pontua todos os pedaços do cabeçalho da página e fica com o melhor — a instituição, a legenda dos símbolos e as datas de revisão de nota ficam de fora |
+| Pautas em inglês | `Number`, `Name`, `Date`, `Grade`, `Test 1`, `Max1`, `1st Season`, `2nd Season`, `resit` |
 | Data do documento | O rodapé `2026/06/25` decide qual versão de uma pauta é a boa |
 
 Três regras que evitam os enganos mais comuns:
@@ -78,6 +80,20 @@ Três regras que evitam os enganos mais comuns:
 - **`Teste 2` também não é, por si só, a 2.ª época.** Ver a secção seguinte.
 - **Se o ficheiro já diz a época, as colunas não a contradizem.** Numa pauta de
   1.ª época, `Exame 1` e `Exame 2` são duas provas dessa época, não duas épocas.
+
+### Colunas que se partem sozinhas
+
+Numa coluna com valores alinhados à direita, um `f` estreito e um `10.0` largo
+não chegam a sobrepor-se em x, e a coluna parte-se em duas — metade dos alunos
+numa, metade na outra. São precisos dois sinais para desfazer a separação: uma
+palavra do cabeçalho (`Test`) passa por cima das duas metades, **e** quase
+nenhum aluno tem valor nas duas ao mesmo tempo.
+
+O segundo sinal é o que impede juntar colunas a sério: `Nota Final` e
+`Avaliação Final` estão ambas preenchidas na mesma linha, por isso ficam
+separadas mesmo com uma palavra larga do cabeçalho por cima. E o «quase» abre
+espaço para notas compostas como `RE m`, que ocupam a coluna e um bocadinho da
+seguinte, mas só em meia dúzia de linhas.
 
 ## Modalidades de avaliação
 
@@ -122,9 +138,10 @@ O que fica por decidir vira uma pergunta na página, com o palpite já marcado:
   `Nota Trabalho` não há dúvida nenhuma.
 - **Que escala?** — se a nota mais alta for 10, tanto pode ser 0-20 como 0-10.
 
-Em **Ajustes avançados** vê-se cada coluna de cada ficheiro, com o papel, a
-época, o tipo, exemplos de valores e a confiança da detecção — e muda-se
-qualquer uma à mão.
+Em **Ajustes avançados** vê-se cada coluna de cada ficheiro — o papel, a época,
+o tipo, o **momento** (1.º teste, 2.º teste, 3.º), a via, exemplos de valores e
+a confiança da detecção — e muda-se qualquer uma à mão. O momento serve para
+dizer «esta coluna é o Teste 2» mesmo quando a aplicação não chegou a perguntar.
 
 ## Como escolhe a melhor nota
 
@@ -206,7 +223,7 @@ gradeorg/
   app.py           API JSON + página
   server.py        arranque e abertura do navegador
   web/             index.html · style.css · app.js
-tests/             168 testes
+tests/             200 testes
 ```
 
 ## Testes
@@ -216,8 +233,10 @@ pip install pytest
 python -m pytest tests -q
 ```
 
-Cobrem a leitura de notas em todos os formatos encontrados, a detecção de
-colunas e épocas (incluindo os casos que enganam), as modalidades de avaliação
+Cobrem a reconstrução de colunas a partir das posições das palavras (com
+geometria fabricada, sem depender de nenhum PDF em disco), a leitura de notas em
+todos os formatos encontrados, as pautas em inglês, a detecção de colunas e
+épocas (incluindo os casos que enganam), as modalidades de avaliação
 (2.º teste contra recurso, duas vias na mesma época, nota mínima por cadeira), a
 junção de alunos, a escolha da melhor nota, os conflitos entre versões, o Excel
 gerado (valores, fórmulas e o conjunto de funções seguras) e o percurso completo

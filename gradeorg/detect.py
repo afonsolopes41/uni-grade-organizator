@@ -39,24 +39,32 @@ from .normalize import (
     parse_grade,
     parse_number,
     parse_student_id,
+    split_glued,
 )
 
 # --------------------------------------------------------------------------
 # Vocabulario
 # --------------------------------------------------------------------------
 
-NAME_WORDS = ["nome", "aluno", "aluna", "estudante", "name", "student", "discente"]
+NAME_WORDS = ["nome", "aluno", "aluna", "estudante", "name", "student", "discente",
+              "student name", "full name"]
 ID_WORDS = ["numero", "num", "n", "no", "id", "codigo", "matricula", "mecanografico",
-            "nmec", "istid", "ist id", "n aluno", "no aluno", "numero aluno"]
+            "nmec", "istid", "ist id", "n aluno", "no aluno", "numero aluno",
+            "number", "student number", "student id", "reg", "registration"]
 
 # Marcadores fortes: nomeiam a epoca sem margem para duvida.
 STRONG_EPOCA = [
     (EPOCA_ESP, ["epoca especial", "especial", "ep especial", "3 epoca", "3a epoca",
-                 "terceira epoca", "ee"]),
+                 "terceira epoca", "ee",
+                 "special season", "special sitting", "special period", "3rd season"]),
     (EPOCA_2, ["2 epoca", "2a epoca", "segunda epoca", "epoca 2", "recurso",
-               "repescagem", "ep2", "2e", "epoca de recurso"]),
+               "repescagem", "ep2", "2e", "epoca de recurso",
+               "2nd season", "second season", "resit", "resit season",
+               "2nd sitting", "supplementary", "season 2"]),
     (EPOCA_1, ["1 epoca", "1a epoca", "primeira epoca", "epoca 1", "epoca normal",
-               "normal", "ep1", "1e", "epoca de exames"]),
+               "normal", "ep1", "1e", "epoca de exames",
+               "1st season", "first season", "normal season", "1st sitting",
+               "season 1", "regular season"]),
 ]
 
 # Marcadores fracos: sugerem uma epoca, mas tambem podem ser so componentes
@@ -84,6 +92,9 @@ FINAL_WORDS = [
     "avaliacao final", "classificacao final", "nota final", "class final",
     "final", "nota", "classificacao", "avaliacao", "total", "media",
     "resultado", "pauta", "cf", "nf",
+    # Pautas em ingles.
+    "final grade", "final mark", "overall grade", "grade", "mark", "marks",
+    "result", "overall", "average", "final result",
 ]
 
 # Quanto mais alto, mais "oficial" e a coluna quando ha varias candidatas.
@@ -91,6 +102,9 @@ FINAL_PRIORITY = {
     "avaliacao final": 100, "classificacao final": 95, "class final": 95,
     "nota final": 90, "classificacao": 70, "avaliacao": 68, "nota": 65,
     "final": 60, "resultado": 55, "media": 45, "total": 40, "cf": 85, "nf": 85,
+    "final grade": 100, "final mark": 98, "overall grade": 95, "final result": 95,
+    "grade": 88, "mark": 80, "marks": 80, "overall": 70, "result": 62,
+    "average": 45,
 }
 
 COMPONENT_WORDS = [
@@ -98,26 +112,42 @@ COMPONENT_WORDS = [
     "laboratorio", "exercicio", "ex", "quiz", "mini", "questao", "pergunta",
     "parte", "grupo", "relatorio", "defesa", "apresentacao", "frequencia",
     "teorica", "pratica", "tpc", "bonus", "moodle", "teste", "exame", "prova",
+    # Pautas em ingles.
+    "test", "exam", "lab", "labs", "laboratory", "laboratories", "quiz",
+    "assignment", "homework", "attendance", "participation", "max", "midterm",
+    "project", "report", "presentation", "coursework", "practical", "theory",
 ]
 
 
 
 IGNORE_WORDS = ["obs", "observacoes", "notas obs", "comentario", "email", "turma",
-                "curso", "ects", "estado", "situacao", "assinatura", "rubrica"]
+                "curso", "ects", "estado", "situacao", "assinatura", "rubrica",
+                "date", "data", "comments", "remarks", "signature", "class",
+                "group", "status", "programme", "course", "year"]
 
 _YEAR_RE = re.compile(r"(20\d{2})\s*[/\-–]\s*(20\d{2}|\d{2})")
 _DATE_RE = re.compile(r"(20\d{2})[/\-.](\d{1,2})[/\-.](\d{1,2})|(\d{1,2})[/\-.](\d{1,2})[/\-.](20\d{2})")
 
 
 def _has_word(header: str, words: list) -> Optional[str]:
-    """Procura uma expressao do vocabulario num cabecalho normalizado."""
-    tokens = header.split()
-    for word in sorted(words, key=len, reverse=True):
-        if " " in word:
-            if word in header:
+    """Procura uma expressao do vocabulario num cabecalho normalizado.
+
+    Olha tambem para a forma com letras e digitos separados, porque ha pautas
+    que escrevem "Test 1" e outras "Test1".
+    """
+    variants = [header]
+    glued = split_glued(header)
+    if glued != header:
+        variants.append(glued)
+
+    for variant in variants:
+        tokens = variant.split()
+        for word in sorted(words, key=len, reverse=True):
+            if " " in word:
+                if word in variant:
+                    return word
+            elif word in tokens:
                 return word
-        elif word in tokens:
-            return word
     return None
 
 
@@ -438,7 +468,7 @@ def moment_index(header: str):
     ``"Teste 2"`` e ``"Nota Final 2"`` devolvem 2; ``"Ex 2"`` devolve None,
     porque ai o 2 e o numero do exercicio, nao do momento.
     """
-    tokens = norm_header(header).split()
+    tokens = split_glued(norm_header(header)).split()
     for position, token in enumerate(tokens):
         if token in ("2", "3"):
             rest = set(tokens[:position] + tokens[position + 1 :])
@@ -709,20 +739,68 @@ _SUBJECT_NOISE = re.compile(
 )
 
 
+#: Palavras que desqualificam um pedaco de texto como nome de UC.
+_NOT_A_SUBJECT = {
+    # instituicao
+    "university", "universidade", "institute", "instituto", "faculty",
+    "faculdade", "escola", "school", "politecnico", "department",
+    "departamento", "lisbon", "lisboa", "porto", "coimbra", "iscte", "ist",
+    # legenda dos simbolos
+    "failure", "failed", "withdrawal", "assessed", "minimum", "passing",
+    "attained", "nonattendance", "reprovado", "aprovado", "faltou", "desistiu",
+    # organizacao do ano
+    "semester", "semestre", "season", "epoca", "sitting", "period", "periodo",
+    # cabecalhos da propria pauta
+    "pauta", "marks", "assessment", "avaliacao", "review", "total", "notas",
+    "classificacoes", "exam", "exame", "office", "sala",
+}
+
+
+def _subject_score(text: str) -> float:
+    """Quao provavel e que este texto seja o nome de uma unidade curricular."""
+    words = [w for w in norm_text(text).split() if w]
+    if not words:
+        return -99.0
+    letters = [w for w in words if w.isalpha()]
+    if not letters:
+        return -99.0
+
+    score = len(letters) * 1.5
+    if len(letters) >= 3:
+        score += 3
+    if any(w in _NOT_A_SUBJECT for w in words):
+        score -= 12
+    digits = sum(1 for w in words if any(ch.isdigit() for ch in w))
+    score -= digits * 3
+    if "%" in text:
+        score -= 6
+    if len(text) < 6:
+        score -= 4
+    return score
+
+
 def guess_subject(filename: str, table: RawTable) -> Guess:
-    """Tenta descobrir a unidade curricular (titulo do documento > ficheiro)."""
-    for line in table.title_lines[:3]:
-        text = clean_text(line)
-        if not text or len(text) < 6:
-            continue
-        match = re.split(r"\s+[-–—]\s+|\s{2,}\|\s{2,}", text)
-        candidate = clean_text(match[0])
-        low = norm_text(candidate)
-        if len(candidate) >= 6 and not low.startswith(("pauta", "nota", "avaliacao", "folha")):
-            if _YEAR_RE.search(candidate):
-                candidate = clean_text(_YEAR_RE.sub("", candidate)).strip("-–— ")
-            if len(candidate) >= 6:
-                return Guess(candidate, 0.85, f"título do documento: «{text[:70]}»")
+    """Tenta descobrir a unidade curricular (titulo do documento > ficheiro).
+
+    Uma pauta traz muito texto a volta -- instituicao, legenda dos simbolos,
+    datas de revisao de nota -- e o nome da cadeira e so mais um pedaco no meio
+    disso. Em vez de assumir que esta no principio, pontuam-se todos os pedacos
+    e fica o melhor.
+    """
+    best_text, best_score = None, 0.0
+    for line in table.title_lines[:10]:
+        for segment in re.split(r"\s+[-–—]\s+|\s*\|\s*|\s*:\s*", clean_text(line)):
+            segment = clean_text(segment).strip("-–—,; ")
+            if len(segment) < 4:
+                continue
+            if _YEAR_RE.search(segment):
+                segment = clean_text(_YEAR_RE.sub("", segment)).strip("-–—/ ")
+            score = _subject_score(segment)
+            if score > best_score:
+                best_text, best_score = segment, score
+
+    if best_text and best_score >= 6:
+        return Guess(best_text, 0.85, f"título do documento: «{best_text}»")
 
     if table.sheet_name:
         cleaned = _clean_subject_token(table.sheet_name.replace("_", " ").replace("-", " "))
@@ -733,6 +811,9 @@ def guess_subject(filename: str, table: RawTable) -> Guess:
     acronym = _acronym_from(stem)
     if acronym:
         return Guess(acronym, 0.5, f"sigla no nome do ficheiro: «{stem}»")
+
+    if best_text:
+        return Guess(best_text, 0.4, f"texto do documento: «{best_text}»")
 
     cleaned = _clean_subject_token(stem.replace("_", " ").replace("-", " "))
     if cleaned and len(cleaned) >= 4:
@@ -1003,22 +1084,26 @@ def _moment_questions(source: Source, grade_columns: list) -> list:
 
         options = [{
             "value": previous,
-            "label": f"Continuação da {EPOCA_LABELS[previous]}",
-            "hint": "2.º teste/frequência — é no mesmo dia do exame",
+            "label": f"{moment}.º teste da {EPOCA_LABELS[previous]}",
+            "hint": "avaliação contínua — faz-se no mesmo dia do exame",
         }]
         for epoca in (EPOCA_2, EPOCA_ESP):
             if epoca != previous:
-                options.append({"value": epoca, "label": EPOCA_LABELS[epoca],
-                                "hint": "é sempre por exame"})
+                options.append({
+                    "value": epoca,
+                    "label": f"{EPOCA_LABELS[epoca]} (exame)",
+                    "hint": "quem chumbou na época anterior vai a este exame",
+                })
 
         questions.append(Question(
             id=f"{source.id}:moment:{moment}",
             type="moment",
             source_id=source.id,
             title=f"Em «{source.label}», {headers} é um segundo momento de avaliação. "
-                  "Conta para a mesma época ou é outra?",
+                  f"É o {moment}.º teste da mesma época ou é outra época?",
             detail=(group[0].evidence or "") +
-                   " Um 2.º teste conta para a 1.ª época; um exame de recurso é 2.ª época.",
+                   f" O {moment}.º teste conta para a mesma época; um exame de recurso "
+                   "é a época seguinte.",
             options=options,
             default=group[0].epoca or previous,
             severity="warning",
@@ -1091,6 +1176,9 @@ def apply_answers(sources: list, answers: dict) -> None:
                 if column.index == column_index:
                     column.scale = scale
 
+    for source in sources:
+        refresh_columns(source)
+
 
 def apply_column_overrides(sources: list, overrides: dict) -> None:
     """Correccoes manuais de colunas vindas da interface.
@@ -1116,6 +1204,13 @@ def apply_column_overrides(sources: list, overrides: dict) -> None:
                 column.epoca = spec["epoca"] or None
             if spec.get("kind"):
                 column.kind = spec["kind"]
+            if "moment" in spec:
+                # Permite dizer "esta coluna é o Teste 2" mesmo quando a
+                # deteccao nao levantou a questao.
+                try:
+                    column.moment = int(spec["moment"]) if spec["moment"] else None
+                except (TypeError, ValueError):
+                    column.moment = None
             if spec.get("scale"):
                 try:
                     column.scale = float(spec["scale"])
@@ -1126,4 +1221,16 @@ def apply_column_overrides(sources: list, overrides: dict) -> None:
             column.reason = "definido pelo utilizador"
 
     for source in sources:
-        _pick_final_columns(source.columns)
+        refresh_columns(source)
+
+
+def refresh_columns(source: Source) -> None:
+    """Refaz os agrupamentos depois de o utilizador mexer nas colunas.
+
+    Os grupos de vias alternativas sao calculados por epoca; mudar a epoca de
+    uma coluna a mao invalidava-os, e a nota final escolhida deixava de bater
+    certo com o que estava no ecra. Sem isto, um ajuste manual podia
+    simplesmente nao ter efeito.
+    """
+    _compute_clusters(source.columns, source.data_rows)
+    _pick_final_columns(source.columns)

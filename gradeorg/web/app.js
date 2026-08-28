@@ -307,6 +307,14 @@ const EPOCA_OPTIONS = [
   ['', '— sem época (componente comum)'],
   ['epoca1', '1.ª Época'], ['epoca2', '2.ª Época'], ['especial', 'Época Especial'],
 ];
+// Dentro de uma época pode haver mais do que um momento de avaliação: o 1.º
+// teste e o 2.º, que se faz no dia do exame.
+const MOMENT_OPTIONS = [
+  ['', '—'],
+  ['1', '1.º teste / momento'],
+  ['2', '2.º teste / momento'],
+  ['3', '3.º momento'],
+];
 
 function renderSources() {
   $('sources').innerHTML = (state.review.sources || []).map((source) => {
@@ -331,6 +339,13 @@ function renderSources() {
                   ${column.role !== 'grade' ? 'disabled' : ''}>
             <option value="final" ${column.kind === 'final' ? 'selected' : ''}>Nota final</option>
             <option value="component" ${column.kind === 'component' ? 'selected' : ''}>Componente</option>
+          </select>
+        </td>
+        <td>
+          <select data-src="${source.id}" data-col="${column.index}" data-field="moment"
+                  ${column.role !== 'grade' ? 'disabled' : ''}>
+            ${MOMENT_OPTIONS.map(([value, label]) =>
+              `<option value="${value}" ${String(column.moment || '') === value ? 'selected' : ''}>${label}</option>`).join('')}
           </select>
         </td>
         <td>${column.moment && column.moment > 1
@@ -358,8 +373,8 @@ function renderSources() {
         </div>
         <table class="col-table">
           <thead><tr>
-            <th>Coluna</th><th>É</th><th>Época</th><th>Tipo</th><th>Via</th>
-            <th>Exemplos</th><th>Confiança</th>
+            <th>Coluna</th><th>É</th><th>Época</th><th>Tipo</th><th>Momento</th>
+            <th>Via</th><th>Exemplos</th><th>Confiança</th>
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>
@@ -369,7 +384,16 @@ function renderSources() {
   $('sources').querySelectorAll('select').forEach((select) => {
     select.addEventListener('change', () => {
       const { src, col, field } = select.dataset;
-      saveOverride(src, col, { [field]: select.value });
+      const spec = { [field]: select.value };
+      // Marcar uma coluna como nota sem dizer mais nada deixava-a sem época e
+      // sem tipo, e portanto sem efeito nenhum no resultado.
+      if (field === 'role' && select.value === 'grade') {
+        const source = (state.review.sources || []).find((s) => s.id === src);
+        const column = source?.columns.find((c) => String(c.index) === String(col));
+        if (column && !column.epoca) spec.epoca = 'epoca1';
+        if (column && column.kind !== 'final') spec.kind = 'component';
+      }
+      saveOverride(src, col, spec);
     });
   });
 }
