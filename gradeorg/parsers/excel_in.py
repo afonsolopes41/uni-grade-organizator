@@ -25,7 +25,7 @@ def parse_xlsx(path: str) -> list:
             tables.append(
                 RawTable(
                     rows=rows,
-                    location=f"folha «{sheet.title}»",
+                    location=f"sheet:{sheet.title}",
                     sheet_name=sheet.title,
                     title_lines=_leading_titles(rows),
                     footer_lines=_trailing_notes(rows),

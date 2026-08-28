@@ -13,6 +13,8 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from .i18n import DEFAULT_LANGUAGE, status_label
+
 # --------------------------------------------------------------------------
 # Texto
 # --------------------------------------------------------------------------
@@ -207,14 +209,7 @@ def split_id_from_name(value: Any):
 #: Estados nao numericos, do "melhor" para o "pior".
 STATUS_ORDER = ["APROVADO", "REPROVADO", "FALTOU", "DESISTIU", "NAO_ADMITIDO", "SEM_NOTA"]
 
-STATUS_LABELS = {
-    "APROVADO": "Aprovado",
-    "REPROVADO": "Reprovado",
-    "FALTOU": "Faltou",
-    "DESISTIU": "Desistiu",
-    "NAO_ADMITIDO": "Nao admitido",
-    "SEM_NOTA": "—",
-}
+STATUS_LABELS = {status: status_label(status) for status in STATUS_ORDER}
 
 _STATUS_TOKENS = {
     "re": "REPROVADO",
@@ -282,10 +277,13 @@ class Grade:
 
     @property
     def label(self) -> str:
+        return self.label_in()
+
+    def label_in(self, lang: str = DEFAULT_LANGUAGE) -> str:
         if self.value is not None:
             return format_grade(self.value)
         if self.status:
-            return STATUS_LABELS.get(self.status, self.status)
+            return status_label(self.status, lang)
         return "—"
 
     def rank(self):
@@ -296,13 +294,13 @@ class Grade:
             return (1, float(len(STATUS_ORDER) - STATUS_ORDER.index(self.status)))
         return (0, 0.0)
 
-    def to_dict(self) -> dict:
+    def to_dict(self, lang: str = DEFAULT_LANGUAGE) -> dict:
         return {
             "value": self.value,
             "status": self.status,
             "raw": self.raw,
             "scale": self.scale,
-            "label": self.label,
+            "label": self.label_in(lang),
         }
 
 

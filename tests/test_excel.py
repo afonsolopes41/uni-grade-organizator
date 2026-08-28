@@ -98,20 +98,21 @@ def test_cada_uc_tem_a_sua_nota_minima_editavel(workbook):
     assert any(f"'Análise Matemática'!$B${SUBJECT_PASS_ROW}" in e for e in espelhos)
 
 
-def test_componentes_aparecem_com_a_epoca(workbook):
+def test_a_folha_da_uc_so_tem_a_nota_final(workbook):
+    """Componentes (Projeto, Teste 1) nao geram colunas: so conta a nota final."""
     sheet = workbook["Análise Matemática"]
-    headers = [c.value for c in sheet[SUBJECT_HEADER_ROW]]
-    assert "1.ª · Projeto" in headers
-    assert "1.ª · Teste 1" in headers
+    headers = [c.value for c in sheet[SUBJECT_HEADER_ROW] if c.value]
+    assert headers[-1] == "Origem da melhor nota"
+    assert not [h for h in headers if "Projeto" in h or "Teste" in h]
 
 
-def test_detalhe_tem_uma_linha_por_nota_e_por_componente(workbook):
+def test_detalhe_tem_uma_linha_por_nota_final(workbook):
     sheet = workbook["Detalhe"]
     rows = [[c.value for c in row] for row in sheet.iter_rows(min_row=5)]
     rows = [r for r in rows if r[1]]
-    assert sorted({r[4] for r in rows}) == ["Componente", "Nota final"]
+    assert sorted({r[4] for r in rows}) == ["Nota final"]
     ana = [r for r in rows if r[1] == "Ana Maria Silva"]
-    assert {r[5] for r in ana} >= {"Nota Final", "Projeto", "Teste 1"}
+    assert {r[5] for r in ana} == {"Nota Final"}
 
 
 def test_so_usa_funcoes_que_o_excel_antigo_conhece(workbook):

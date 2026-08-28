@@ -18,16 +18,9 @@ import unicodedata
 from dataclasses import dataclass, field
 from typing import Optional
 
-from .models import (
-    EPOCA_LABELS,
-    EPOCAS,
-    KIND_FINAL,
-    ROLE_GRADE,
-    ROLE_ID,
-    ROLE_NAME,
-    ROUTE_LABELS,
-    GradeEntry,
-)
+from .i18n import (DEFAULT_LANGUAGE, Msg, epoca_label, normalize_language,
+                   notice_type, render, route_label)
+from .models import EPOCAS, ROLE_ID, ROLE_NAME, GradeEntry
 from .normalize import (
     Grade,
     clean_text,
@@ -54,14 +47,26 @@ class Settings:
     #: Nome escolhido para cada grupo de pautas da mesma cadeira, ou "__split__"
     #: quando o utilizador diz que afinal sao cadeiras diferentes.
     subject_aliases: dict = field(default_factory=dict)
-    #: Ano, semestre e ECTS de cada cadeira -- e o que permite as medias por
-    #: semestre, por ano e de fim de curso.
+    #: Ano, semestre, ECTS e curso de cada cadeira -- e o que permite as medias
+    #: por semestre, por ano e de fim de curso.
     subject_curriculum: dict = field(default_factory=dict)
+    #: Cadeiras que o utilizador apagou: continuam nos ficheiros, mas ficam de
+    #: fora das notas, das medias e do Excel.
+    removed_subjects: list = field(default_factory=list)
     scale: float = DEFAULT_SCALE
     merge_by_name: bool = True
+    #: Lingua da interface e do Excel ("pt" ou "en").
+    language: str = DEFAULT_LANGUAGE
 
     def curriculum_for(self, subject: str) -> dict:
         return dict(self.subject_curriculum.get(subject) or {})
+
+    def course_for(self, subject: str) -> str:
+        """Curso a que a cadeira pertence. Vazio = comum a varios cursos."""
+        return (self.subject_curriculum.get(subject) or {}).get("course") or ""
+
+    def is_removed(self, subject: Optional[str]) -> bool:
+        return bool(subject) and subject in self.removed_subjects
 
     def pass_mark_for(self, subject: Optional[str]) -> float:
         """A nota minima desta UC, ou a de omissao se nao tiver uma."""
@@ -90,8 +95,17 @@ class Settings:
             except (TypeError, ValueError):
                 continue
         settings.subject_aliases = dict(data.get("subject_aliases") or {})
+        settings.removed_subjects = sorted(
+            {str(s) for s in (data.get("removed_subjects") or []) if s})
+        settings.language = normalize_language(data.get("language"))
         for subject, meta in (data.get("subject_curriculum") or {}).items():
             entry = dict(settings.subject_curriculum.get(subject) or {})
+            if "course" in (meta or {}):
+                course = str(meta["course"] or "").strip()
+                if course:
+                    entry["course"] = course
+                else:
+                    entry.pop("course", None)
             for key in ("year", "semester", "ects"):
                 if key not in (meta or {}):
                     continue
@@ -116,8 +130,10 @@ class Settings:
                 "subject_aliases": dict(self.subject_aliases),
                 "subject_curriculum": {k: dict(v) for k, v in
                                        self.subject_curriculum.items()},
+                "removed_subjects": list(self.removed_subjects),
                 "scale": self.scale,
-                "merge_by_name": self.merge_by_name}
+                "merge_by_name": self.merge_by_name,
+                "language": self.language}
 
 
 # --------------------------------------------------------------------------
@@ -182,13 +198,16 @@ def resolve_subjects(sources: list, settings: Settings):
         distinct = sorted(set(candidates), key=lambda n: (-len(n), n))
         choice = settings.subject_aliases.get(key)
 
-        if choice == SPLIT or not distinct:
+        if choice == SPLIT or (not distinct and not choice):
             # Cada pauta fica com o seu nome.
             for source in group:
-                names[source.id] = source.subject.value or f"(UC de {source.filename})"
+                names[source.id] = source.subject.value or source.label_in(
+                    settings.language)
             continue
 
-        canonical = choice if choice in distinct else distinct[0]
+        # Um nome escolhido a mao ganha sempre -- e assim que se muda o nome de
+        # uma cadeira, mesmo para um que nao apareca em ficheiro nenhum.
+        canonical = choice or distinct[0]
         for source in group:
             names[source.id] = canonical
 
@@ -204,6 +223,35 @@ def resolve_subjects(sources: list, settings: Settings):
     return names, merged
 
 
+def subject_files(sources: list, subject_names: dict) -> dict:
+    """Que ficheiros deram origem a cada cadeira."""
+    files: dict = {}
+    for source in sources:
+        subject = subject_names.get(source.id)
+        if not subject:
+            continue
+        entry = files.setdefault(subject, [])
+        # O que interessa e o ficheiro, nao a folha ou a pagina: duas folhas do
+        # mesmo ficheiro sao uma origem so.
+        if source.filename not in entry:
+            entry.append(source.filename)
+    return {subject: sorted(labels) for subject, labels in files.items()}
+
+
+def subject_keys(sources: list, subject_names: dict) -> dict:
+    """Chaves de agrupamento por nome de cadeira -- e por elas que se renomeia."""
+    keys: dict = {}
+    for source in sources:
+        subject = subject_names.get(source.id)
+        if not subject:
+            continue
+        entry = keys.setdefault(subject, [])
+        key = subject_group_key(source)
+        if key not in entry:
+            entry.append(key)
+    return keys
+
+
 def merge_questions(sources: list, settings: Settings) -> list:
     """Pergunta se duas pautas com o mesmo codigo sao mesmo a mesma cadeira."""
     from .models import Question
@@ -213,20 +261,20 @@ def merge_questions(sources: list, settings: Settings) -> list:
     for merge in merged:
         if merge["confirmed"]:
             continue
-        nomes = " e ".join(f"«{n}»" for n in merge["names"])
+        nomes = ", ".join(f"«{n}»" for n in merge["names"])
+        ficheiros = ", ".join(merge["files"])
         questions.append(Question(
             id=f"merge:{merge['key']}",
             type="subject_merge",
             source_id=None,
-            title=f"{nomes} são a mesma cadeira?",
-            detail=("Têm o mesmo código " + f"({merge['code']}) " if merge["code"]
-                    else "Parecem a mesma cadeira ")
-                   + "mas as pautas dão-lhes nomes diferentes: "
-                   + ", ".join(merge["files"]) + ".",
-            options=[{"value": name, "label": f"Sim — usar «{name}»"}
+            title=Msg("question.merge.title", names=nomes),
+            detail=(Msg("question.merge.detail_code", code=merge["code"], files=ficheiros)
+                    if merge["code"]
+                    else Msg("question.merge.detail_similar", files=ficheiros)),
+            options=[{"value": name, "label": Msg("question.merge.yes", name=name)}
                      for name in merge["names"]]
-                    + [{"value": SPLIT, "label": "Não, são cadeiras diferentes",
-                        "hint": "cada pauta fica com o seu nome"}],
+                    + [{"value": SPLIT, "label": Msg("question.merge.split"),
+                        "hint": Msg("question.merge.split_hint")}],
             default=merge["chosen"],
             severity="warning",
         ))
@@ -251,15 +299,21 @@ class RowRecord:
 
 def extract_records(sources: list, settings: Settings,
                     subject_names: Optional[dict] = None) -> list:
-    """Le cada linha de cada Source e transforma-a num RowRecord."""
+    """Le cada linha de cada Source e transforma-a num RowRecord.
+
+    So interessa a nota final: as colunas de componentes (testes, laboratorios,
+    trabalhos) servem para perceber a estrutura da pauta, mas nao entram no
+    resultado.
+    """
     records = []
     subject_names = subject_names or {}
     for source in sources:
         name_column = next((c for c in source.columns if c.role == ROLE_NAME), None)
         id_column = next((c for c in source.columns if c.role == ROLE_ID), None)
-        grade_columns = [c for c in source.columns if c.role == ROLE_GRADE]
+        final_columns = source.final_columns()
+        source_label = source.label_in(settings.language)
         subject = (subject_names.get(source.id) or source.subject.value
-                   or f"(UC de {source.filename})")
+                   or source_label)
 
         for row_index, row in enumerate(source.data_rows):
             def cell(column):
@@ -279,7 +333,7 @@ def extract_records(sources: list, settings: Settings,
 
             record = RowRecord(
                 source_id=source.id,
-                source_label=source.label,
+                source_label=source_label,
                 row_index=row_index,
                 name=name,
                 student_id=student_id,
@@ -290,58 +344,23 @@ def extract_records(sources: list, settings: Settings,
                 return _rescale(parse_grade(cell(column), scale=column.scale),
                                 settings.scale)
 
-            components_by_epoca: dict = {}
-            for column in grade_columns:
-                if column.kind == KIND_FINAL:
-                    continue
+            for column in final_columns:
                 grade = read(column)
+                # Sem nota, o aluno nao foi a esta epoca: nao vale a pena criar
+                # uma linha vazia para ele.
                 if grade.is_empty:
                     continue
-                components_by_epoca.setdefault(column.epoca, {})[column.header] = grade
-
-            shared = components_by_epoca.get(None, {})
-            for column in grade_columns:
-                if column.kind != KIND_FINAL:
-                    continue
-                grade = read(column)
-                epoca = column.epoca or EPOCAS[0]
-                own = components_by_epoca.get(column.epoca, {})
-                # Sem nota e sem componentes proprios, o aluno nao foi a esta
-                # epoca: nao vale a pena criar uma linha vazia para ele.
-                if grade.is_empty and not own:
-                    continue
-                components = dict(shared)
-                components.update(own)
                 record.entries.append(GradeEntry(
                     subject=subject,
-                    epoca=epoca,
+                    epoca=column.epoca or EPOCAS[0],
                     grade=grade,
                     source_id=source.id,
-                    source_label=source.label,
+                    source_label=source_label,
                     column_header=column.header,
                     route=column.route,
                     document_date=source.document_date,
                     file_order=source.file_order,
-                    components=components,
                 ))
-
-            # Sem coluna final mas com componentes: guarda-se na mesma, para o
-            # aluno aparecer na listagem.
-            if not record.entries and components_by_epoca:
-                for epoca, components in components_by_epoca.items():
-                    if not components:
-                        continue
-                    record.entries.append(GradeEntry(
-                        subject=subject,
-                        epoca=epoca or EPOCAS[0],
-                        grade=Grade(status="SEM_NOTA", raw=""),
-                        source_id=source.id,
-                        source_label=source.label,
-                        column_header="",
-                        document_date=source.document_date,
-                        file_order=source.file_order,
-                        components=components,
-                    ))
             records.append(record)
     return records
 
@@ -504,22 +523,33 @@ def _rank_entries(entries: list) -> list:
     return sorted(entries, key=key, reverse=True)
 
 
-def _priority_reason(entries: list) -> str:
-    return ("documento mais recente" if all(e.document_date for e in entries)
-            else "ficheiro carregado mais tarde")
+def _priority_reason(entries: list):
+    return Msg("reason.newest_document" if all(e.document_date for e in entries)
+               else "reason.latest_file")
 
 
 def consolidate(sources: list, settings: Optional[Settings] = None) -> dict:
     """Produz a listagem consolidada, pronta para a web e para o Excel."""
     settings = settings or Settings()
     subject_names, merged_subjects = resolve_subjects(sources, settings)
-    semestres = detected_semesters(sources, subject_names)
-    records = extract_records(sources, settings, subject_names)
+
+    # Cadeiras apagadas pelo utilizador saem de tudo -- notas, medias e Excel.
+    active = [s for s in sources if not settings.is_removed(subject_names.get(s.id))]
+    known_subjects = sorted({subject_names[s.id] for s in active
+                             if subject_names.get(s.id)}, key=_sort_key)
+    files_by_subject = subject_files(active, subject_names)
+    courses = {subject: settings.course_for(subject) for subject in known_subjects}
+
+    semestres = detected_semesters(active, subject_names)
+    records = extract_records(active, settings, subject_names)
     clusters = cluster_records(records, settings)
 
     conflicts: list = []
     warnings: list = []
     students: list = []
+
+    def etiqueta(grade) -> str:
+        return grade.label_in(settings.language)
 
     for cluster in clusters:
         name = _best_name(cluster)
@@ -531,7 +561,7 @@ def consolidate(sources: list, settings: Optional[Settings] = None) -> dict:
             conflicts.append({
                 "type": "numero",
                 "student": name,
-                "detail": f"O mesmo aluno aparece com números diferentes: {', '.join(all_ids)}.",
+                "detail": Msg("conflict.numero.detail", ids=", ".join(all_ids)),
                 "chosen": student_id,
                 "severity": "warning",
             })
@@ -539,8 +569,8 @@ def consolidate(sources: list, settings: Optional[Settings] = None) -> dict:
             warnings.append({
                 "type": "nome",
                 "student": name,
-                "detail": "Nome escrito de maneiras diferentes: "
-                          + "; ".join(all_names) + f". Usado: «{name}».",
+                "detail": Msg("warning.nome.detail",
+                              names="; ".join(all_names), chosen=name),
                 "severity": "info",
             })
 
@@ -567,11 +597,13 @@ def consolidate(sources: list, settings: Optional[Settings] = None) -> dict:
                             "type": "linha repetida",
                             "student": name,
                             "subject": subject,
-                            "epoca": EPOCA_LABELS.get(epoca, epoca),
-                            "detail": f"O aluno aparece mais do que uma vez em «{key[1]}» "
-                                      f"({repeated[0].source_label}) com valores diferentes: "
-                                      + "; ".join(e.grade.label for e in repeated),
-                            "chosen": max(repeated, key=lambda e: e.grade.rank()).grade.label,
+                            "epoca": epoca,
+                            "detail": Msg(
+                                "conflict.repeated_row.detail",
+                                column=key[1], source=repeated[0].source_label,
+                                values="; ".join(etiqueta(e.grade) for e in repeated)),
+                            "chosen": etiqueta(
+                                max(repeated, key=lambda e: e.grade.rank()).grade),
                             "severity": "warning",
                         })
 
@@ -588,50 +620,41 @@ def consolidate(sources: list, settings: Optional[Settings] = None) -> dict:
                 ranked = _rank_entries(list(per_source.values()))
                 winner = ranked[0]
 
-                distinct = {
-                    (e.grade.value, e.grade.status) for e in ranked
-                    if not (e.grade.is_empty and e.components)
-                }
+                distinct = {(e.grade.value, e.grade.status) for e in ranked}
                 if len(distinct) > 1:
                     conflicts.append({
                         "type": "nota",
                         "student": name,
                         "subject": subject,
-                        "epoca": EPOCA_LABELS.get(epoca, epoca),
-                        "detail": "Valores diferentes em ficheiros diferentes: "
-                                  + "; ".join(
-                                      f"{e.grade.label} ({e.source_label})" for e in ranked),
-                        "chosen": f"{winner.grade.label} ({winner.source_label}) "
-                                  f"— {_priority_reason(ranked)}",
+                        "epoca": epoca,
+                        "detail": Msg("conflict.grade.detail", values="; ".join(
+                            f"{etiqueta(e.grade)} ({e.source_label})" for e in ranked)),
+                        "chosen": Msg("conflict.grade.chosen",
+                                      value=etiqueta(winner.grade),
+                                      source=winner.source_label,
+                                      reason=_priority_reason(ranked)),
                         "severity": "warning",
                     })
 
-                components = {}
-                for entry in reversed(entries):
-                    components.update(entry.components)
-
                 epoca_results[epoca] = {
                     "epoca": epoca,
-                    "label": EPOCA_LABELS.get(epoca, epoca),
                     "grade": winner.grade,
                     "value20": _to_scale(winner.grade, settings.scale),
                     "source_id": winner.source_id,
                     "source_label": winner.source_label,
                     "column": winner.column_header,
                     "route": winner.route,
-                    "route_label": ROUTE_LABELS.get(winner.route or "", ""),
-                    "components": components,
                     # Outras versoes do mesmo dado, noutros ficheiros.
                     "other_versions": [
-                        {"label": e.grade.label, "source": e.source_label,
+                        {"label": etiqueta(e.grade), "source": e.source_label,
                          "column": e.column_header}
                         for e in ranked[1:] if not e.grade.is_empty
                     ],
                     # Outras vias de avaliacao do mesmo ficheiro que o aluno
                     # tambem tem preenchidas (raro: normalmente so faz uma).
                     "other_routes": [
-                        {"label": e.grade.label, "column": e.column_header,
-                         "route": ROUTE_LABELS.get(e.route or "", "")}
+                        {"label": etiqueta(e.grade), "column": e.column_header,
+                         "route": e.route}
                         for e in routes
                     ],
                 }
@@ -647,6 +670,7 @@ def consolidate(sources: list, settings: Optional[Settings] = None) -> dict:
             }
 
         averages = _student_averages(subjects, settings, semestres)
+        averages.update(_plan_coverage(subjects, known_subjects, courses))
         students.append({
             "averages": averages,
             "key": _student_key(student_id, name),
@@ -659,45 +683,107 @@ def consolidate(sources: list, settings: Optional[Settings] = None) -> dict:
         })
 
     students.sort(key=lambda s: _sort_key(s["name"]))
-    subject_names = sorted({s for st in students for s in st["subjects"]}, key=_sort_key)
-    pass_marks = {s: settings.pass_mark_for(s) for s in subject_names}
+    listed = sorted({s for st in students for s in st["subjects"]}, key=_sort_key)
+    subject_list = listed + [s for s in known_subjects if s not in listed]
+    pass_marks = {s: settings.pass_mark_for(s) for s in subject_list}
 
     for suggestion in find_similar_names(clusters):
         warnings.append({
             "type": "possivel_duplicado",
             "student": suggestion["left"],
-            "detail": f"«{suggestion['left']}» e «{suggestion['right']}» têm nomes muito "
-                      f"parecidos (semelhança {suggestion['similarity']:.0%}) mas ficaram "
-                      "como alunos diferentes. Confirme se é a mesma pessoa.",
+            "detail": Msg("warning.similar_names.detail",
+                          left=suggestion["left"], right=suggestion["right"],
+                          similarity=f"{suggestion['similarity']:.0%}"),
             "severity": "info",
         })
 
-    curriculum = {s: effective_curriculum(s, settings, semestres) for s in subject_names}
+    curriculum = {s: effective_curriculum(s, settings, semestres) for s in subject_list}
     for merge in merged_subjects:
-        if not merge["confirmed"]:
-            warnings.append({
-                "type": "cadeiras juntadas",
-                "student": "",
-                "subject": merge["chosen"],
-                "detail": "As pautas " + " e ".join(f"«{f}»" for f in merge["files"])
-                          + (f" têm o mesmo código ({merge['code']})" if merge["code"]
-                             else " parecem ser da mesma cadeira")
-                          + " mas dão-lhe nomes diferentes: "
-                          + "; ".join(f"«{n}»" for n in merge["names"])
-                          + f". Foram tratadas como uma só, com o nome «{merge['chosen']}».",
-                "severity": "info",
-            })
+        if merge["confirmed"]:
+            continue
+        ficheiros = " e ".join(f"«{f}»" for f in merge["files"])
+        nomes = "; ".join(f"«{n}»" for n in merge["names"])
+        warnings.append({
+            "type": "cadeiras juntadas",
+            "student": "",
+            "subject": merge["chosen"],
+            "detail": (Msg("warning.merged.detail_code", files=ficheiros,
+                           code=merge["code"], names=nomes, chosen=merge["chosen"])
+                       if merge["code"] else
+                       Msg("warning.merged.detail_similar", files=ficheiros,
+                           names=nomes, chosen=merge["chosen"])),
+            "severity": "info",
+        })
+
+    warnings.extend(_sources_without_final(active, subject_names, settings.language))
 
     return {
         "students": students,
-        "subjects": subject_names,
+        "subjects": subject_list,
         "conflicts": conflicts,
         "warnings": warnings,
         "settings": settings.to_dict(),
         "pass_marks": pass_marks,
         "curriculum": curriculum,
+        "courses": courses,
+        "subject_files": files_by_subject,
+        "removed_subjects": sorted(settings.removed_subjects),
         "merged_subjects": merged_subjects,
-        "stats": _stats(students, subject_names, settings),
+        "stats": _stats(students, subject_list, settings),
+    }
+
+
+def _sources_without_final(sources: list, subject_names: dict,
+                           lang: str = DEFAULT_LANGUAGE) -> list:
+    """Pautas que nao trazem nota final nenhuma -- e que por isso nao contam."""
+    avisos = []
+    for source in sources:
+        if source.final_columns():
+            continue
+        why = ""
+        if source.component_label:
+            why = Msg("warning.no_final.component", label=source.component_label,
+                      weight=source.component_weight)
+        avisos.append({
+            "type": "pauta sem nota final",
+            "student": "",
+            "subject": subject_names.get(source.id) or "",
+            "detail": Msg("warning.no_final.detail",
+                          label=source.label_in(lang), why=why),
+            "severity": "warning",
+        })
+    return avisos
+
+
+def _plan_coverage(subjects: dict, known_subjects: list, courses: dict) -> dict:
+    """Que parte do plano de estudos deste aluno e que nos temos.
+
+    Ha cadeiras que sao de um curso so e cadeiras comuns a varios. Quem nao e do
+    curso das primeiras nunca vai ter nota nelas -- e nao e por isso que esta
+    pior. O plano de cada aluno e, entao, as cadeiras comuns mais as do curso
+    dele; o curso deduz-se das cadeiras exclusivas em que tem nota.
+    """
+    seen = set(subjects)
+    mine = sorted({courses.get(s) for s in seen if courses.get(s)})
+    course = mine[0] if len(mine) == 1 else None
+
+    named = any(courses.get(s) for s in known_subjects)
+    if mine:
+        plan = [s for s in known_subjects
+                if not courses.get(s) or courses.get(s) in mine]
+    elif named:
+        # Nao se sabe o curso deste aluno: so se lhe pode exigir as comuns.
+        plan = [s for s in known_subjects if not courses.get(s)]
+    else:
+        plan = list(known_subjects)
+
+    missing = [s for s in plan if s not in seen]
+    return {
+        "course": course,
+        "courses": mine,
+        "coverage": {"have": len([s for s in plan if s in seen]),
+                     "total": len(plan),
+                     "missing": missing},
     }
 
 
@@ -824,8 +910,8 @@ def _stats(students: list, subjects: list, settings: Settings) -> dict:
 # Serializacao para a interface web
 # --------------------------------------------------------------------------
 
-def to_json(result: dict) -> dict:
-    """Versao serializavel (os objectos Grade viram dicionarios)."""
+def to_json(result: dict, lang: str = DEFAULT_LANGUAGE) -> dict:
+    """Versao serializavel e traduzida (os Grade viram dicionarios)."""
     students = []
     for student in result["students"]:
         subjects = {}
@@ -834,15 +920,15 @@ def to_json(result: dict) -> dict:
             for epoca, info in data["epocas"].items():
                 epocas[epoca] = {
                     "epoca": epoca,
-                    "label": info["label"],
-                    "grade": info["grade"].to_dict(),
+                    "label": epoca_label(epoca, lang),
+                    "grade": info["grade"].to_dict(lang),
                     "source_label": info["source_label"],
                     "column": info["column"],
                     "route": info.get("route"),
-                    "route_label": info.get("route_label", ""),
+                    "route_label": route_label(info.get("route"), lang),
                     "other_versions": info.get("other_versions", []),
-                    "other_routes": info.get("other_routes", []),
-                    "components": {k: v.to_dict() for k, v in info["components"].items()},
+                    "other_routes": [dict(r, route=route_label(r.get("route"), lang))
+                                     for r in info.get("other_routes", [])],
                 }
             best: Optional[Grade] = data["best"]
             subjects[subject] = {
@@ -850,8 +936,9 @@ def to_json(result: dict) -> dict:
                 "epocas": epocas,
                 "pass_mark": data["pass_mark"],
                 "best_epoca": data["best_epoca"],
-                "best_epoca_label": EPOCA_LABELS.get(data["best_epoca"] or "", "—"),
-                "best": best.to_dict() if best else None,
+                "best_epoca_label": (epoca_label(data["best_epoca"], lang)
+                                     if data["best_epoca"] else "—"),
+                "best": best.to_dict(lang) if best else None,
                 "best_rounded": round_grade(best.value) if best else None,
                 "approved": data["approved"],
             }
@@ -864,15 +951,28 @@ def to_json(result: dict) -> dict:
             "all_names": student["all_names"],
             "subjects": subjects,
         })
+
+    def notice(entry: dict) -> dict:
+        out = dict(entry)
+        out["detail"] = render(entry.get("detail"), lang)
+        out["chosen"] = render(entry.get("chosen"), lang)
+        out["type_label"] = notice_type(entry.get("type"), lang)
+        if entry.get("epoca"):
+            out["epoca"] = epoca_label(entry["epoca"], lang)
+        return out
+
     return {
         "students": students,
         "subjects": result["subjects"],
-        "epocas": [{"key": e, "label": EPOCA_LABELS[e]} for e in EPOCAS],
-        "conflicts": result["conflicts"],
-        "warnings": result["warnings"],
+        "epocas": [{"key": e, "label": epoca_label(e, lang)} for e in EPOCAS],
+        "conflicts": [notice(c) for c in result["conflicts"]],
+        "warnings": [notice(w) for w in result["warnings"]],
         "settings": result["settings"],
         "pass_marks": result.get("pass_marks", {}),
         "curriculum": result.get("curriculum", {}),
+        "courses": result.get("courses", {}),
+        "subject_files": result.get("subject_files", {}),
+        "removed_subjects": result.get("removed_subjects", []),
         "merged_subjects": result.get("merged_subjects", []),
         "stats": result["stats"],
     }

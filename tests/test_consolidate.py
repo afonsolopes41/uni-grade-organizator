@@ -166,5 +166,8 @@ def test_to_json_traz_tudo_o_que_a_pagina_precisa():
     assert uc["best"]["label"] == "15,5"
     assert uc["best_rounded"] == 16
     assert uc["best_epoca_label"] == "1.ª Época"
-    assert uc["epocas"][EPOCA_1]["components"]["Projeto"]["label"] == "17"
+    # So a nota final interessa: as colunas de componentes nao vao para o
+    # resultado, nem sequer como informacao lateral.
+    assert uc["epocas"][EPOCA_1]["column"] == "Nota Final"
+    assert "components" not in uc["epocas"][EPOCA_1]
     assert data["stats"]["students"] == 1

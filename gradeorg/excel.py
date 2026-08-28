@@ -3,8 +3,7 @@
 O livro tem quatro tipos de folha:
 
 * **Resumo** -- um aluno por linha, uma coluna por UC, com media e contagens;
-* **uma folha por UC** -- as tres epocas lado a lado, a melhor nota e os
-  componentes (agrupados, podem ser recolhidos no Excel);
+* **uma folha por UC** -- as tres epocas lado a lado e a melhor nota;
 * **Detalhe** -- formato longo, uma linha por nota, com a origem;
 * **Avisos** -- conflitos e coisas que convem o utilizador confirmar.
 
@@ -25,7 +24,8 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter, quote_sheetname
 from openpyxl.worksheet.worksheet import Worksheet
 
-from .models import EPOCA_LABELS, EPOCAS
+from .i18n import DEFAULT_LANGUAGE, epoca_label, notice_type, render, tr
+from .models import EPOCAS
 from .normalize import Grade
 
 FONT = "Arial"
@@ -137,7 +137,8 @@ def _sheet_name(base: str, used: set) -> str:
     return candidate
 
 
-def _grade_cell(sheet: Worksheet, row: int, column: int, grade: Optional[Grade]):
+def _grade_cell(sheet: Worksheet, row: int, column: int, grade: Optional[Grade],
+                lang: str = DEFAULT_LANGUAGE):
     """Escreve uma nota: numero quando ha numero, texto do estado caso contrario."""
     cell = sheet.cell(row=row, column=column)
     if grade is None:
@@ -148,7 +149,7 @@ def _grade_cell(sheet: Worksheet, row: int, column: int, grade: Optional[Grade])
         cell.value = round(grade.value, 4)
         cell.number_format = GRADE_FORMAT
     else:
-        cell.value = grade.label
+        cell.value = grade.label_in(lang)
         cell.font = Font(name=FONT, size=10, italic=True, color=MUTED)
     return cell
 
@@ -169,9 +170,11 @@ def _id_cell(sheet: Worksheet, row: int, column: int, student_id: Optional[str])
 
 def build_workbook(result: dict, source_labels: Optional[list] = None,
                    selected_students: Optional[list] = None,
-                   selected_subjects: Optional[list] = None) -> Workbook:
+                   selected_subjects: Optional[list] = None,
+                   lang: Optional[str] = None) -> Workbook:
     """Constroi o livro a partir do resultado de ``consolidate.consolidate``."""
     settings = result["settings"]
+    lang = lang or settings.get("language") or DEFAULT_LANGUAGE
     pass_mark = float(settings.get("pass_mark", 9.5))
     pass_marks = {k: float(v) for k, v in (result.get("pass_marks") or {}).items()}
 
@@ -192,7 +195,9 @@ def build_workbook(result: dict, source_labels: Optional[list] = None,
     stamp = dt.datetime.now().strftime("%d/%m/%Y %H:%M")
     origem = ", ".join(source_labels or []) or "—"
 
-    used_names: set = set()
+    used_names: set = {tr(key, lang).lower() for key in
+                       ("xl.sheet.summary", "xl.sheet.averages",
+                        "xl.sheet.detail", "xl.sheet.notices")}
     subject_sheets: dict = {}
     subject_extent: dict = {}
     for subject in subjects:
@@ -200,23 +205,30 @@ def build_workbook(result: dict, source_labels: Optional[list] = None,
         count = sum(1 for s in students if subject in s["subjects"])
         subject_extent[subject] = _subject_extent(count)
 
-    summary = workbook.create_sheet("Resumo")
+    files_by_subject = result.get("subject_files") or {}
+
+    summary_name = tr("xl.sheet.summary", lang)
+    summary = workbook.create_sheet(summary_name)
     summary_first_row = _build_summary(summary, students, subjects, subject_sheets,
                                        subject_extent, pass_marks, pass_mark,
-                                       stamp, origem)
+                                       stamp, origem, lang)
 
     for subject in subjects:
         sheet = workbook.create_sheet(subject_sheets[subject])
         _build_subject_sheet(sheet, subject, students,
-                             pass_marks.get(subject, pass_mark), stamp)
+                             pass_marks.get(subject, pass_mark), stamp,
+                             files_by_subject.get(subject) or [], lang)
 
     if subjects:
-        _build_averages(workbook.create_sheet("Médias"), students, subjects,
-                        subject_sheets, summary_first_row, pass_mark,
-                        result.get("curriculum") or {}, stamp)
+        _build_averages(workbook.create_sheet(tr("xl.sheet.averages", lang)),
+                        students, subjects, subject_sheets, summary_first_row,
+                        pass_mark, result.get("curriculum") or {}, stamp,
+                        summary_name, lang)
 
-    _build_detail(workbook.create_sheet("Detalhe"), students, subjects, stamp)
-    _build_notices(workbook.create_sheet("Avisos"), result, stamp)
+    _build_detail(workbook.create_sheet(tr("xl.sheet.detail", lang)),
+                  students, subjects, stamp, lang)
+    _build_notices(workbook.create_sheet(tr("xl.sheet.notices", lang)),
+                   result, stamp, lang)
 
     workbook.active = 0
     return workbook
@@ -228,17 +240,18 @@ def build_workbook(result: dict, source_labels: Optional[list] = None,
 
 def _build_summary(sheet: Worksheet, students: list, subjects: list,
                    subject_sheets: dict, subject_extent: dict,
-                   pass_marks: dict, default_pass: float, stamp: str, origem: str) -> None:
+                   pass_marks: dict, default_pass: float, stamp: str, origem: str,
+                   lang: str = DEFAULT_LANGUAGE) -> int:
     width = max(2 + len(subjects) + 3, 4)
-    row = _title_block(sheet, width, "Notas consolidadas — resumo por aluno",
-                       f"Gerado em {stamp} · Ficheiros: {origem}")
+    row = _title_block(sheet, width, tr("xl.summary.title", lang),
+                       tr("xl.summary.subtitle", lang, stamp=stamp, files=origem))
 
     # A nota minima de cada cadeira vive na folha dessa cadeira; aqui fica um
     # espelho, para se ver tudo de uma vez.
-    sheet.cell(row=row, column=1, value="Nota mínima por cadeira").font = Font(
+    sheet.cell(row=row, column=1, value=tr("xl.summary.pass_row", lang)).font = Font(
         name=FONT, size=11, bold=True, color=INK)
     sheet.cell(row=row, column=3,
-               value="editam-se na folha de cada UC (célula amarela)").font = Font(
+               value=tr("xl.summary.pass_hint", lang)).font = Font(
         name=FONT, size=9, italic=True, color=MUTED)
     row += 1
 
@@ -256,7 +269,9 @@ def _build_summary(sheet: Worksheet, students: list, subjects: list,
         pass_refs = {}
     row += 1
 
-    headers = ["Nº Aluno", "Nome"] + subjects + ["Média", "Aprovadas", "UCs"]
+    headers = ([tr("xl.col.student_id", lang), tr("xl.col.name", lang)] + subjects
+               + [tr("xl.col.average", lang), tr("xl.col.approved", lang),
+                  tr("xl.col.subjects", lang)])
     widths = [11, 42] + [max(14, min(24, len(s) // 2 + 8)) for s in subjects] + [10, 11, 8]
     header_row = row
     _header_row(sheet, header_row, headers, widths)
@@ -287,7 +302,7 @@ def _build_summary(sheet: Worksheet, students: list, subjects: list,
                 cell.value = round(best.value, 4)
                 cell.number_format = GRADE_FORMAT
             else:
-                cell.value = best.label
+                cell.value = best.label_in(lang)
                 cell.font = Font(name=FONT, size=10, italic=True, color=MUTED)
 
         first_col = get_column_letter(3)
@@ -318,22 +333,25 @@ def _build_summary(sheet: Worksheet, students: list, subjects: list,
     sheet.freeze_panes = sheet.cell(row=first_data, column=3)
 
     if students and subjects:
-        _distribution_block(sheet, last_data + 3, subjects, subject_sheets, subject_extent)
+        _distribution_block(sheet, last_data + 3, subjects, subject_sheets,
+                            subject_extent, lang)
     return first_data
 
 
 def _distribution_block(sheet: Worksheet, row: int, subjects: list,
-                        subject_sheets: dict, subject_extent: dict) -> None:
+                        subject_sheets: dict, subject_extent: dict,
+                        lang: str = DEFAULT_LANGUAGE) -> None:
     """Distribuicao das melhores notas por escalao, com grafico."""
     bands = [("< 10", -0.001, 9.4999), ("10 – 13", 9.5, 13.4999),
              ("14 – 15", 13.5, 15.4999), ("16 – 17", 15.5, 17.4999),
              ("18 – 20", 17.5, 20.0)]
 
-    sheet.cell(row=row, column=1, value="Distribuição das melhores notas").font = Font(
+    sheet.cell(row=row, column=1,
+               value=tr("xl.distribution.title", lang)).font = Font(
         name=FONT, size=12, bold=True, color=INK)
     row += 1
 
-    _header_row(sheet, row, ["Escalão"] + subjects)
+    _header_row(sheet, row, [tr("xl.col.band", lang)] + subjects)
     header_row = row
     for index, (label, low, high) in enumerate(bands, start=1):
         current = header_row + index
@@ -349,10 +367,10 @@ def _distribution_block(sheet: Worksheet, row: int, subjects: list,
 
     chart = BarChart()
     chart.type = "col"
-    chart.title = "Melhores notas por escalão"
+    chart.title = tr("xl.distribution.chart", lang)
     chart.style = 10
-    chart.y_axis.title = "Alunos"
-    chart.x_axis.title = "Escalão"
+    chart.y_axis.title = tr("xl.distribution.students", lang)
+    chart.x_axis.title = tr("xl.col.band", lang)
     data = Reference(sheet, min_col=2, min_row=header_row,
                      max_col=1 + len(subjects), max_row=last)
     categories = Reference(sheet, min_col=1, min_row=header_row + 1, max_row=last)
@@ -367,45 +385,38 @@ def _distribution_block(sheet: Worksheet, row: int, subjects: list,
 # --------------------------------------------------------------------------
 
 def _build_subject_sheet(sheet: Worksheet, subject: str, students: list,
-                         pass_mark: float, stamp: str) -> None:
+                         pass_mark: float, stamp: str,
+                         files: Optional[list] = None,
+                         lang: str = DEFAULT_LANGUAGE) -> None:
     rows = [s for s in students if subject in s["subjects"]]
 
-    component_keys: list = []
-    for student in rows:
-        for epoca, info in student["subjects"][subject]["epocas"].items():
-            for header in info["components"]:
-                key = (epoca, header)
-                if key not in component_keys:
-                    component_keys.append(key)
-    original_order = {key: index for index, key in enumerate(component_keys)}
-    component_keys.sort(key=lambda k: (EPOCAS.index(k[0]) if k[0] in EPOCAS else 9,
-                                       original_order[k]))
-
-    fixed = ["Nº Aluno", "Nome", EPOCA_LABELS[EPOCAS[0]], EPOCA_LABELS[EPOCAS[1]],
-             EPOCA_LABELS[EPOCAS[2]], "Melhor Nota", "Nota Final", "Época da melhor",
-             "Estado", "Origem da melhor nota"]
-    components = [f"{EPOCA_LABELS.get(e, '—')[:3]} · {h}" for e, h in component_keys]
-    headers = fixed + components
+    headers = [tr("xl.col.student_id", lang), tr("xl.col.name", lang),
+               epoca_label(EPOCAS[0], lang), epoca_label(EPOCAS[1], lang),
+               epoca_label(EPOCAS[2], lang), tr("xl.col.best", lang),
+               tr("xl.col.final", lang), tr("xl.col.best_epoca", lang),
+               tr("xl.col.state", lang), tr("xl.col.best_source", lang)]
     width = len(headers)
 
-    _title_block(sheet, width, subject,
-                 f"{len(rows)} alunos · melhor de 1.ª, 2.ª e época especial · "
-                 f"gerado em {stamp}")
+    subtitle = tr("xl.subject.subtitle", lang, count=len(rows), stamp=stamp)
+    if files:
+        subtitle += " · " + tr("xl.subject.sources", lang, files=", ".join(files))
+    _title_block(sheet, width, subject, subtitle)
 
     # Cada cadeira tem a sua nota minima. Fica aqui, editavel, e as colunas
     # «Estado» desta folha e as contagens do Resumo seguem-na.
     sheet.cell(row=SUBJECT_PASS_ROW, column=1,
-               value="Nota mínima de aprovação").font = Font(name=FONT, size=10, bold=True)
+               value=tr("xl.subject.pass_mark", lang)).font = Font(
+        name=FONT, size=10, bold=True)
     pass_cell = sheet.cell(row=SUBJECT_PASS_ROW, column=2, value=pass_mark)
     pass_cell.number_format = GRADE_FORMAT
     pass_cell.font = Font(name=FONT, size=10, bold=True, color="0000FF")
     pass_cell.fill = PatternFill("solid", fgColor="FFF9C4")
     pass_cell.alignment = Alignment(horizontal="center")
     sheet.cell(row=SUBJECT_PASS_ROW, column=3,
-               value="↖ editável — a coluna «Estado» recalcula.").font = Font(
+               value=tr("xl.subject.pass_hint", lang)).font = Font(
         name=FONT, size=9, italic=True, color=MUTED)
 
-    widths = [11, 40, 13, 13, 15, 13, 12, 16, 13, 30] + [13] * len(components)
+    widths = [11, 40, 13, 13, 15, 13, 12, 16, 13, 30]
     header_row = SUBJECT_HEADER_ROW
     _header_row(sheet, header_row, headers, widths)
 
@@ -418,7 +429,7 @@ def _build_subject_sheet(sheet: Worksheet, subject: str, students: list,
 
         for index, epoca in enumerate(EPOCAS):
             info = data["epocas"].get(epoca)
-            _grade_cell(sheet, current, 3 + index, info["grade"] if info else None)
+            _grade_cell(sheet, current, 3 + index, info["grade"] if info else None, lang)
 
         span = f"C{current}:E{current}"
         best: Optional[Grade] = data["best"]
@@ -428,7 +439,7 @@ def _build_subject_sheet(sheet: Worksheet, subject: str, students: list,
             best_cell.value = f'=IF(COUNT({span})=0,"—",MAX({span}))'
             best_cell.number_format = GRADE_FORMAT
         elif best is not None:
-            best_cell.value = best.label
+            best_cell.value = best.label_in(lang)
             best_cell.font = Font(name=FONT, size=10, italic=True, color=MUTED)
         else:
             best_cell.value = "—"
@@ -447,30 +458,27 @@ def _build_subject_sheet(sheet: Worksheet, subject: str, students: list,
                                 f'INDEX($C${header_row}:$E${header_row},'
                                 f'MATCH(MAX({span}),{span},0)))')
         else:
-            epoca_cell.value = data.get("best_epoca_label") or "—"
+            epoca_cell.value = (epoca_label(data["best_epoca"], lang)
+                                if data.get("best_epoca") else "—")
 
+        aprovado = tr("xl.state.approved", lang)
+        reprovado = tr("xl.state.failed", lang)
         state = sheet.cell(row=current, column=9)
         state.value = (f'=IF(NOT(ISNUMBER(F{current})),"—",'
-                       f'IF(F{current}>=$B${SUBJECT_PASS_ROW},"Aprovado","Reprovado"))'
+                       f'IF(F{current}>=$B${SUBJECT_PASS_ROW},'
+                       f'"{aprovado}","{reprovado}"))'
                        if best is not None and best.value is not None
-                       else _state_label(data["approved"]))
+                       else _state_label(data["approved"], lang))
 
         best_info = data["epocas"].get(data["best_epoca"] or "")
         sheet.cell(row=current, column=10,
                    value=(best_info or {}).get("source_label", "—"))
 
-        for index, key in enumerate(component_keys):
-            info = data["epocas"].get(key[0])
-            grade = (info or {}).get("components", {}).get(key[1])
-            cell = _grade_cell(sheet, current, len(fixed) + 1 + index, grade)
-            if grade is None:
-                cell.value = ""
-
     last_data = first_data + len(rows) - 1
     if rows:
         _style_body(sheet, first_data, last_data, width)
         _grade_rules(sheet, f"C{first_data}:G{last_data}", pass_mark)
-        _state_rules(sheet, f"I{first_data}:I{last_data}")
+        _state_rules(sheet, f"I{first_data}:I{last_data}", lang)
         sheet.auto_filter.ref = f"A{header_row}:{get_column_letter(width)}{last_data}"
 
         for column in range(6, 8):
@@ -480,28 +488,22 @@ def _build_subject_sheet(sheet: Worksheet, subject: str, students: list,
 
     sheet.freeze_panes = sheet.cell(row=first_data, column=3)
 
-    if components:
-        # Componentes ficam agrupados: dao para recolher com um clique.
-        first = len(fixed) + 1
-        sheet.column_dimensions.group(get_column_letter(first),
-                                      get_column_letter(width), hidden=False)
 
-
-def _state_label(approved: Optional[bool]) -> str:
+def _state_label(approved: Optional[bool], lang: str = DEFAULT_LANGUAGE) -> str:
     if approved is True:
-        return "Aprovado"
+        return tr("xl.state.approved", lang)
     if approved is False:
-        return "Reprovado"
-    return "—"
+        return tr("xl.state.failed", lang)
+    return tr("xl.state.pending", lang)
 
 
-def _state_rules(sheet: Worksheet, ref: str) -> None:
+def _state_rules(sheet: Worksheet, ref: str, lang: str = DEFAULT_LANGUAGE) -> None:
     sheet.conditional_formatting.add(ref, CellIsRule(
-        operator="equal", formula=['"Aprovado"'],
+        operator="equal", formula=[f'"{tr("xl.state.approved", lang)}"'],
         font=Font(name=FONT, size=10, bold=True, color=GREEN),
         fill=PatternFill("solid", bgColor=GREEN_BG)))
     sheet.conditional_formatting.add(ref, CellIsRule(
-        operator="equal", formula=['"Reprovado"'],
+        operator="equal", formula=[f'"{tr("xl.state.failed", lang)}"'],
         font=Font(name=FONT, size=10, bold=True, color=RED),
         fill=PatternFill("solid", bgColor=RED_BG)))
 
@@ -512,7 +514,8 @@ def _state_rules(sheet: Worksheet, ref: str) -> None:
 
 def _build_averages(sheet: Worksheet, students: list, subjects: list,
                     subject_sheets: dict, resumo_first: int, default_pass: float,
-                    curriculum: dict, stamp: str) -> None:
+                    curriculum: dict, stamp: str, summary_name: str = "Resumo",
+                    lang: str = DEFAULT_LANGUAGE) -> None:
     """Medias por semestre, por ano e de fim de curso.
 
     Cada UC tem aqui duas colunas de apoio -- quanto contribui e quanto pesa --
@@ -520,7 +523,7 @@ def _build_averages(sheet: Worksheet, students: list, subjects: list,
     nota corrigida na folha da UC atravessa o Resumo e chega aqui. Quando os
     ECTS nao estao preenchidos o peso e 1, o que da a media simples.
     """
-    resumo = quote_sheetname("Resumo")
+    resumo = quote_sheetname(summary_name)
 
     # Uma cadeira sem ano ou semestre nao entra nas medias parciais.
     grupos: dict = {}
@@ -533,19 +536,20 @@ def _build_averages(sheet: Worksheet, students: list, subjects: list,
         grupos.setdefault((year, semester), []).append(subject)
         anos.setdefault(year, []).append(subject)
 
-    headers = ["Nº Aluno", "Nome"]
+    headers = [tr("xl.col.student_id", lang), tr("xl.col.name", lang)]
     for subject in subjects:
-        headers += [f"{subject} · contribui", f"{subject} · peso"]
+        headers += [f"{subject} · +", f"{subject} · ×"]
     grupo_keys = sorted(grupos)
-    headers += [f"{y}.º ano · {s}.º sem." for y, s in grupo_keys]
+    headers += [tr("xl.averages.semester", lang, year=y, semester=s)
+                for y, s in grupo_keys]
     ano_keys = sorted(anos)
-    headers += [f"Média do {y}.º ano" for y in ano_keys]
-    headers += ["Média de curso", "Arredondada", "UCs", "ECTS"]
+    headers += [tr("xl.averages.year", lang, year=y) for y in ano_keys]
+    headers += [tr("xl.averages.final", lang), tr("xl.col.rounded", lang),
+                tr("xl.col.subjects", lang), tr("xl.col.ects", lang)]
     width = len(headers)
 
-    row = _title_block(sheet, width, "Médias por semestre, por ano e de curso",
-                       "Contam as cadeiras aprovadas · os ECTS em branco valem 1 "
-                       f"(média simples) · gerado em {stamp}")
+    row = _title_block(sheet, width, tr("xl.averages.title", lang),
+                       tr("xl.averages.subtitle", lang, stamp=stamp))
 
     widths = [11, 34] + [14, 10] * len(subjects) + [15] * len(grupo_keys) \
              + [15] * len(ano_keys) + [15, 12, 8, 9]
@@ -631,12 +635,15 @@ def _average_cell(sheet: Worksheet, row: int, column: int, subjects: list,
 # Folha "Detalhe"
 # --------------------------------------------------------------------------
 
-def _build_detail(sheet: Worksheet, students: list, subjects: list, stamp: str) -> None:
-    headers = ["Nº Aluno", "Nome", "Unidade Curricular", "Época", "Tipo", "Item",
-               "Valor", "Origem"]
+def _build_detail(sheet: Worksheet, students: list, subjects: list, stamp: str,
+                  lang: str = DEFAULT_LANGUAGE) -> None:
+    headers = [tr("xl.col.student_id", lang), tr("xl.col.name", lang),
+               tr("xl.col.subject", lang), tr("xl.col.epoca", lang),
+               tr("xl.col.kind", lang), tr("xl.col.item", lang),
+               tr("xl.col.value", lang), tr("xl.col.source", lang)]
     width = len(headers)
-    row = _title_block(sheet, width, "Detalhe de todas as notas",
-                       f"Uma linha por nota, incluindo componentes · gerado em {stamp}")
+    row = _title_block(sheet, width, tr("xl.detail.title", lang),
+                       tr("xl.detail.subtitle", lang, stamp=stamp))
     _header_row(sheet, row, headers, [11, 34, 32, 15, 13, 22, 11, 34])
     header_row = row
     current = header_row + 1
@@ -653,23 +660,12 @@ def _build_detail(sheet: Worksheet, students: list, subjects: list, stamp: str) 
                 _id_cell(sheet, current, 1, student["student_id"])
                 sheet.cell(row=current, column=2, value=student["name"])
                 sheet.cell(row=current, column=3, value=subject)
-                sheet.cell(row=current, column=4, value=info["label"])
-                sheet.cell(row=current, column=5, value="Nota final")
+                sheet.cell(row=current, column=4, value=epoca_label(epoca, lang))
+                sheet.cell(row=current, column=5, value=tr("xl.detail.final", lang))
                 sheet.cell(row=current, column=6, value=info["column"] or "—")
-                _grade_cell(sheet, current, 7, info["grade"])
+                _grade_cell(sheet, current, 7, info["grade"], lang)
                 sheet.cell(row=current, column=8, value=info["source_label"])
                 current += 1
-
-                for header, grade in info["components"].items():
-                    _id_cell(sheet, current, 1, student["student_id"])
-                    sheet.cell(row=current, column=2, value=student["name"])
-                    sheet.cell(row=current, column=3, value=subject)
-                    sheet.cell(row=current, column=4, value=info["label"])
-                    sheet.cell(row=current, column=5, value="Componente")
-                    sheet.cell(row=current, column=6, value=header)
-                    _grade_cell(sheet, current, 7, grade)
-                    sheet.cell(row=current, column=8, value=info["source_label"])
-                    current += 1
 
     last = current - 1
     if last >= header_row + 1:
@@ -682,21 +678,22 @@ def _build_detail(sheet: Worksheet, students: list, subjects: list, stamp: str) 
 # Folha "Avisos"
 # --------------------------------------------------------------------------
 
-def _build_notices(sheet: Worksheet, result: dict, stamp: str) -> None:
-    headers = ["Gravidade", "Tipo", "Aluno", "Unidade Curricular", "Descrição",
-               "Valor escolhido"]
+def _build_notices(sheet: Worksheet, result: dict, stamp: str,
+                   lang: str = DEFAULT_LANGUAGE) -> None:
+    headers = [tr("xl.col.severity", lang), tr("xl.col.type", lang),
+               tr("xl.col.name", lang), tr("xl.col.subject", lang),
+               tr("xl.col.description", lang), tr("xl.col.chosen", lang)]
     width = len(headers)
     entries = list(result.get("conflicts", [])) + list(result.get("warnings", []))
 
-    row = _title_block(sheet, width, "Avisos e conflitos",
-                       f"{len(entries)} pontos a confirmar · gerado em {stamp}")
+    row = _title_block(sheet, width, tr("xl.notices.title", lang),
+                       tr("xl.notices.subtitle", lang, count=len(entries), stamp=stamp))
     _header_row(sheet, row, headers, [13, 18, 32, 30, 78, 32])
     header_row = row
     current = header_row + 1
 
     if not entries:
-        sheet.cell(row=current, column=1,
-                   value="Sem conflitos: todos os ficheiros foram lidos sem ambiguidades.")
+        sheet.cell(row=current, column=1, value=tr("xl.notices.none", lang))
         sheet.cell(row=current, column=1).font = Font(name=FONT, size=10, italic=True,
                                                       color=GREEN)
         return
@@ -704,14 +701,15 @@ def _build_notices(sheet: Worksheet, result: dict, stamp: str) -> None:
     for entry in entries:
         severity = entry.get("severity", "info")
         cell = sheet.cell(row=current, column=1,
-                         value="Conflito" if severity == "warning" else "Informação")
+                          value=tr("xl.notices.conflict" if severity == "warning"
+                                   else "xl.notices.info", lang))
         cell.font = Font(name=FONT, size=10, bold=True,
                          color=AMBER if severity == "warning" else INK_SOFT)
-        sheet.cell(row=current, column=2, value=entry.get("type", ""))
+        sheet.cell(row=current, column=2, value=notice_type(entry.get("type"), lang))
         sheet.cell(row=current, column=3, value=entry.get("student", ""))
         sheet.cell(row=current, column=4, value=entry.get("subject", ""))
-        sheet.cell(row=current, column=5, value=entry.get("detail", ""))
-        sheet.cell(row=current, column=6, value=entry.get("chosen", ""))
+        sheet.cell(row=current, column=5, value=render(entry.get("detail", ""), lang))
+        sheet.cell(row=current, column=6, value=render(entry.get("chosen", ""), lang))
         current += 1
 
     last = current - 1

@@ -15,6 +15,7 @@ import traceback
 from flask import Flask, jsonify, request, send_file, send_from_directory
 
 from .excel import build_workbook
+from .i18n import tr
 from .parsers import SUPPORTED, UnsupportedFile
 from .session import SESSION
 
@@ -54,16 +55,16 @@ def create_app() -> Flask:
     def api_upload():
         uploaded = request.files.getlist("files")
         if not uploaded:
-            return jsonify({"error": "Não veio nenhum ficheiro."}), 400
+            return jsonify({"error": tr("api.no_files", SESSION.language)}), 400
 
         accepted, rejected = [], []
         for item in uploaded:
             name = item.filename or "ficheiro"
             extension = os.path.splitext(name)[1].lower()
             if extension not in SUPPORTED:
-                rejected.append({"name": name,
-                                 "error": f"Formato «{extension or '?'}» não suportado. "
-                                          "Aceita PDF, XLSX, CSV e TXT."})
+                rejected.append({"name": name, "error": tr(
+                    "api.unsupported_format", SESSION.language,
+                    ext=extension or "?")})
                 continue
             try:
                 SESSION.add_file(name, item.read())
@@ -72,8 +73,8 @@ def create_app() -> Flask:
                 rejected.append({"name": name, "error": str(error)})
             except Exception as error:                     # noqa: BLE001
                 traceback.print_exc()
-                rejected.append({"name": name,
-                                 "error": f"Não foi possível ler o ficheiro: {error}"})
+                rejected.append({"name": name, "error": tr(
+                    "api.read_failed", SESSION.language, error=error)})
 
         payload = SESSION.review()
         payload["accepted"] = accepted
@@ -88,6 +89,29 @@ def create_app() -> Flask:
             overrides=body.get("overrides"),
             settings=body.get("settings"),
         )
+        return jsonify(SESSION.review())
+
+    @app.post("/api/subjects")
+    def api_subjects():
+        """Apagar, repor e mudar o nome a uma unidade curricular."""
+        body = request.get_json(silent=True) or {}
+        action = body.get("action")
+        subject = (body.get("subject") or "").strip()
+        if action == "rename":
+            SESSION.rename_subject(subject, body.get("name") or "")
+        elif action == "remove":
+            SESSION.remove_subject(subject)
+        elif action == "restore":
+            SESSION.restore_subject(subject)
+        else:
+            return jsonify({"error": tr("api.unknown_action", SESSION.language,
+                                        action=action)}), 400
+        return jsonify(SESSION.review())
+
+    @app.post("/api/language")
+    def api_language():
+        body = request.get_json(silent=True) or {}
+        SESSION.set_language(body.get("language"))
         return jsonify(SESSION.review())
 
     @app.post("/api/files/remove")
@@ -106,19 +130,22 @@ def create_app() -> Flask:
     @app.get("/api/results")
     def api_results():
         if not SESSION.files:
-            return jsonify({"error": "Ainda não foi carregado nenhum ficheiro."}), 400
+            return jsonify({"error": tr("api.nothing_loaded",
+                                        SESSION.language)}), 400
         return jsonify(SESSION.result())
 
     @app.post("/api/export")
     def api_export():
         if not SESSION.files:
-            return jsonify({"error": "Ainda não foi carregado nenhum ficheiro."}), 400
+            return jsonify({"error": tr("api.nothing_loaded",
+                                        SESSION.language)}), 400
         body = request.get_json(silent=True) or {}
         workbook = build_workbook(
             SESSION.raw_result(),
             source_labels=SESSION.source_labels(),
             selected_students=body.get("students") or None,
             selected_subjects=body.get("subjects") or None,
+            lang=SESSION.language,
         )
         stream = io.BytesIO()
         workbook.save(stream)
@@ -140,11 +167,12 @@ def create_app() -> Flask:
 
     @app.errorhandler(413)
     def too_large(_error):
-        return jsonify({"error": "Ficheiro demasiado grande (limite de 64 MB)."}), 413
+        return jsonify({"error": tr("api.too_large", SESSION.language)}), 413
 
     @app.errorhandler(500)
     def server_error(error):
         traceback.print_exc()
-        return jsonify({"error": f"Erro interno: {error}"}), 500
+        return jsonify({"error": tr("api.internal_error", SESSION.language,
+                                    error=error)}), 500
 
     return app

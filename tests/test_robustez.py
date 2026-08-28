@@ -105,7 +105,8 @@ def test_muitas_colunas_de_componentes():
     ana = resultado["students"][0]
     uc = next(iter(ana["subjects"].values()))
     assert uc["best"]["label"] == "18"
-    assert len(uc["epocas"]["epoca1"]["components"]) == 30
+    # As 30 perguntas nao entram: interessa a nota final, mais nada.
+    assert uc["epocas"]["epoca1"]["column"] == "Total"
 
 
 def test_mesmo_aluno_duas_vezes_no_mesmo_ficheiro_gera_conflito():

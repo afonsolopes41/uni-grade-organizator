@@ -7,18 +7,26 @@ cadeira**.
 
 Corre como um programa local: abre um servidor em `127.0.0.1`, mostra tudo numa
 página web e produz um ficheiro Excel formatado. **Nada sai do computador.**
+Fala **português de Portugal** e **inglês**, e **lembra-se de tudo** entre
+arranques.
 
 ```
 pautas (PDF / XLSX / CSV / TXT)
         │
         ├─ leitura      cada formato tem o seu leitor
-        ├─ detecção     que coluna é o quê, que UC, que época
+        ├─ detecção     onde está a NOTA FINAL, que UC, que época
         ├─ perguntas    o que não dá para deduzir é perguntado
         ├─ consolidação junta os alunos, escolhe a melhor nota
         │
         ├──▶ página web   procurar, filtrar, ver o detalhe
-        └──▶ Excel        Resumo · uma folha por UC · Detalhe · Avisos
+        └──▶ Excel        Resumo · Médias · uma folha por UC · Detalhe · Avisos
 ```
+
+**Só interessa a nota final.** As colunas de testes, laboratórios, trabalhos e
+participação servem para perceber a estrutura da pauta — para saber qual é a
+coluna da nota final e a que época pertence — mas não entram no resultado. Uma
+pauta que não traga nota final nenhuma não conta, e a aplicação diz porquê em
+vez de a deixar cair em silêncio.
 
 ## Como usar
 
@@ -67,7 +75,7 @@ confiança a cada conclusão.
 | Notas | Números, mas também `RE`, `NA`, `FA`, `f`, `m`, `d`, `RE m`, `Aprovado`, `-`, `13,25`, `13.25`, `85%`, `15/20` |
 | Épocas | `2.ª Época`, `Recurso`, `1E`, `Época Especial`; e blocos de colunas seguidas |
 | Momentos de avaliação | Se `Teste 2` é o 2.º teste da 1.ª época ou o recurso — decidido pelos dados (ver abaixo) |
-| Nota final vs. componente | `Avaliação Final` > `Nota Final` > `Total`; `Projeto`, `Ex 4a`, `Participação` são componentes |
+| Qual é a nota final | `Avaliação Final` > `Nota Final` > `Total`; `Projeto`, `Ex 4a`, `Participação` ficam de fora |
 | Unidade curricular | Pontua todos os pedaços do cabeçalho da página e fica com o melhor — a instituição, a legenda dos símbolos e as datas de revisão de nota ficam de fora |
 | Código da cadeira | `03713 - SGR - Segurança e Gestão de Redes` — é o que junta a mesma cadeira em pautas de línguas diferentes |
 | Semestre | `2º Semestre`, `2nd Semester`, `Semestre 2` |
@@ -115,8 +123,10 @@ teste*, não a nota final da cadeira. Tratá-la como nota final punha-a a compet
 com a pauta da época — e, sendo a mais recente, ganhava a errada.
 
 O peso no título (`30%`) é o sinal: abaixo de 100%, a pauta é de um componente.
-A coluna passa a chamar-se `Teste 1 (30%)`, entra como componente da época e a
-nota final continua a vir da pauta da época.
+A coluna passa a chamar-se `Teste 1 (30%)`, a pauta fica **sem nota final** e,
+como só a nota final conta, não entra no resultado. Fica um aviso a dizer
+exactamente isso — e, se for mesmo para usar, marca-se a coluna como nota final
+nos ajustes avançados.
 
 ## Modalidades de avaliação
 
@@ -163,10 +173,10 @@ O que fica por decidir vira uma pergunta na página, com o palpite já marcado:
   `Nota Trabalho` não há dúvida nenhuma.
 - **Que escala?** — se a nota mais alta for 10, tanto pode ser 0-20 como 0-10.
 
-Em **Ajustes avançados** vê-se cada coluna de cada ficheiro — o papel, a época,
-o tipo, o **momento** (1.º teste, 2.º teste, 3.º), a via, exemplos de valores e
-a confiança da detecção — e muda-se qualquer uma à mão. O momento serve para
-dizer «esta coluna é o Teste 2» mesmo quando a aplicação não chegou a perguntar.
+Em **Ajustes avançados** vê-se cada coluna de cada ficheiro — se é o nome, o
+número, a **nota final** ou nada disso, a época, exemplos de valores e a
+confiança da detecção — e muda-se qualquer uma à mão. Como só a nota final
+conta, não há mais nada para escolher.
 
 ## Como escolhe a melhor nota
 
@@ -181,6 +191,63 @@ aluno fez — a melhor, nos casos raros em que tenha as duas.
 
 Quem só foi à 1.ª época fica com essa; quem foi à 2.ª fica com a melhor das
 duas. `RE` na 1.ª e `14` na 2.ª dá **14**.
+
+## Gerir as unidades curriculares
+
+A tabela **Unidades curriculares** é o painel de controlo das cadeiras:
+
+- **Mudar o nome** a qualquer momento — escreve-se por cima e carrega-se Enter.
+  O nome novo leva consigo a nota mínima, o ano, o semestre e os ECTS, e fica
+  guardado; nenhuma pauta precisa de ter esse nome escrito.
+- **Apagar** uma cadeira (✕). Sai das notas, das médias e do Excel, mas o
+  ficheiro fica: aparece na linha «Apagadas», com **repor** ao lado.
+- **Ver de que ficheiro vem** cada cadeira — a coluna «Ficheiros» mostra todas
+  as pautas que lhe deram origem (a do teste e a da época, a versão portuguesa e
+  a inglesa).
+
+## Cadeiras de um curso e cadeiras comuns
+
+Há cadeiras que são de vários cursos e cadeiras que são só de um. Quem é de
+outro curso nunca vai ter nota nas segundas — e **isso não é uma falha dele**.
+
+O campo **Curso** de cada UC resolve isto. Em branco, a cadeira é comum a vários
+cursos; preenchido (`LEI`, `IGE`…), é exclusiva desse curso. A partir daí:
+
+- o **curso de cada aluno** deduz-se das cadeiras exclusivas em que tem nota;
+- o **plano dele** são as comuns mais as do curso dele;
+- a **cobertura** aparece no detalhe: *«Tem nota em 8 das 11 cadeiras do plano»*,
+  com a lista do que falta.
+
+Quem não tem nenhuma cadeira exclusiva fica com o plano das comuns e não é
+penalizado pelas que nunca podia ter feito. Se nenhum curso estiver preenchido,
+o plano é simplesmente o conjunto de todas as cadeiras carregadas.
+
+## Idioma
+
+O botão **PT / EN** no topo troca a língua de tudo o que se lê: a página, as
+perguntas, as razões da detecção, os avisos, os conflitos, os estados das notas
+(`Reprovado` / `Failed`), os nomes das épocas (`2.ª Época` / `2nd Season`) e
+**também o Excel** — folhas, cabeçalhos e textos. A escolha fica guardada.
+
+## Memória
+
+A aplicação lembra-se do que se estava a fazer. Fecha-se e volta a abrir-se com
+tudo como ficou: os ficheiros carregados, as respostas às perguntas, os ajustes
+de colunas, os nomes das cadeiras, o plano de estudos, as notas mínimas e a
+língua.
+
+Fica tudo numa pasta do utilizador — `%APPDATA%\OrganizadorDeNotas` no Windows,
+`~/Library/Application Support/OrganizadorDeNotas` no macOS,
+`~/.local/share/organizador-de-notas` no Linux:
+
+```
+sessao.json   respostas, definições e lista de ficheiros
+ficheiros/    cópia das pautas carregadas
+tabelas/      as tabelas já extraídas, para o arranque ser imediato
+```
+
+Só o botão **Apagar tudo** limpa (com confirmação). Se o estado guardado estiver
+estragado, a aplicação arranca vazia em vez de rebentar.
 
 ## Semestres, anos e médias
 
@@ -241,8 +308,8 @@ Em qualquer dos casos fica registado um conflito, visível na página e na folha
 |---|---|
 | **Resumo** | Notas mínimas de todas as UCs, um aluno por linha, uma coluna por UC, média e nº de aprovações; gráfico da distribuição por escalão |
 | **Médias** | Médias por semestre, por ano e de curso, com as colunas de apoio agrupadas (podem ser recolhidas) |
-| **Uma por UC** | Nota mínima editável, as três épocas lado a lado, melhor nota, época da melhor, estado, origem, e os componentes (agrupados — dá para recolher) |
-| **Detalhe** | Uma linha por nota e por componente, com o ficheiro de onde veio |
+| **Uma por UC** | Nota mínima editável, as três épocas lado a lado, melhor nota, época da melhor, estado e origem; o subtítulo diz de que ficheiros veio |
+| **Detalhe** | Uma linha por nota, com o ficheiro de onde veio |
 | **Avisos** | Conflitos e coisas a confirmar |
 
 As células calculadas — melhor nota, arredondamento, estado, média, contagens,
@@ -266,13 +333,15 @@ gradeorg/
     excel_in.py    openpyxl
     text.py        CSV, TSV e texto alinhado por espaços
   detect.py        cabeçalho, papéis das colunas, UC, época, perguntas
-  consolidate.py   junção de alunos, conflitos, melhor nota
+  consolidate.py   junção de alunos, conflitos, melhor nota, médias
   excel.py         geração do livro formatado
+  i18n.py          textos em português e inglês (servidor e Excel)
+  storage.py       memória em disco entre arranques
   session.py       estado da sessão
   app.py           API JSON + página
   server.py        arranque e abertura do navegador
-  web/             index.html · style.css · app.js
-tests/             229 testes
+  web/             index.html · style.css · app.js · i18n.js
+tests/             260 testes
 ```
 
 ## Testes
@@ -288,7 +357,10 @@ todos os formatos encontrados, as pautas em inglês, a detecção de colunas e
 épocas (incluindo os casos que enganam), as modalidades de avaliação
 (2.º teste contra recurso, duas vias na mesma época, pautas de um componente só,
 nota mínima por cadeira), a identidade das cadeiras pelo código, as médias por
-semestre, ano e curso, a junção de alunos, a escolha da melhor nota, os conflitos entre versões, o Excel
+semestre, ano e curso, a gestão das cadeiras (mudar o nome, apagar, repor,
+origem), as cadeiras de um curso contra as comuns, a memória entre arranques, as
+duas línguas (incluindo a garantia de que nenhuma chave fica por traduzir), a
+junção de alunos, a escolha da melhor nota, os conflitos entre versões, o Excel
 gerado (valores, fórmulas e o conjunto de funções seguras) e o percurso completo
 pela API.
 
@@ -301,5 +373,7 @@ A aplicação diz isso em vez de devolver uma lista vazia.
 
 ## Privacidade
 
-As pautas ficam num directório temporário durante a sessão e são apagadas ao
-limpar. O servidor só aceita ligações de `127.0.0.1` e não faz pedidos para fora.
+As pautas ficam guardadas **no computador de quem as carrega** (ver
+*[Memória](#memória)*), para a aplicação poder continuar de onde ficou, e
+desaparecem com **Apagar tudo**. O servidor só aceita ligações de `127.0.0.1` e
+não faz pedidos para fora — nem para fontes, nem para nada.

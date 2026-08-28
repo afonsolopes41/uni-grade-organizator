@@ -118,7 +118,7 @@ def _table_from_lines(page, page_no: int) -> Optional[RawTable]:
 
     text_lines = [clean_text(l) for l in (page.extract_text() or "").splitlines()]
     text_lines = [l for l in text_lines if l]
-    return RawTable(rows=best, location=f"página {page_no}", page=page_no,
+    return RawTable(rows=best, location=f"page:{page_no}", page=page_no,
                     title_lines=text_lines[:3], footer_lines=text_lines[-3:])
 
 
@@ -163,7 +163,7 @@ def _table_from_words(page, page_no: int) -> Optional[RawTable]:
     title_lines = _text_segments(lines[:first_header])
     footer_lines = _text_segments(lines[body_indices[-1] + 1 :])
 
-    return RawTable(rows=rows, location=f"página {page_no}", page=page_no,
+    return RawTable(rows=rows, location=f"page:{page_no}", page=page_no,
                     title_lines=title_lines, footer_lines=footer_lines)
 
 
@@ -449,14 +449,21 @@ def _merge_continuation_pages(tables: list) -> list:
         prev = merged[-1]
         if _shares_header(prev.rows[0], table.rows[0]):
             _append_aligned(prev, table.rows[0], table.rows[1:])
-            prev.location += f", {table.location.replace('página ', '')}"
+            prev.location = _join_pages(prev.location, table.location)
         elif (len(table.rows[0]) == len(prev.rows[0])
               and not _looks_like_header(table.rows[0])):
             prev.rows.extend(table.rows)
-            prev.location += f", {table.location.replace('página ', '')}"
+            prev.location = _join_pages(prev.location, table.location)
         else:
             merged.append(table)
     return merged
+
+
+def _join_pages(first: str, second: str) -> str:
+    """«page:1» + «page:2» = «page:1,2» (a tabela atravessa as duas paginas)."""
+    if not first.startswith("page:") or not second.startswith("page:"):
+        return first
+    return first + "," + second[len("page:"):]
 
 
 def _shares_header(first: list, other: list) -> bool:
