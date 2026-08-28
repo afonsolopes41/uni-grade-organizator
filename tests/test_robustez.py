@@ -113,7 +113,7 @@ def test_mesmo_aluno_duas_vezes_no_mesmo_ficheiro_gera_conflito():
         "Nome;Nº;Nota Final\nAna Maria Silva;112233;14\nAna Maria Silva;112233;16\n").encode())
     resultado = session.result()
     assert len(resultado["students"]) == 1
-    assert any(c["type"] == "nota" for c in resultado["conflicts"])
+    assert any(c["type"] == "linha repetida" for c in resultado["conflicts"])
 
 
 def test_excel_gerado_abre_em_todos_os_casos_limite():

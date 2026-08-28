@@ -35,10 +35,10 @@ def test_segunda_epoca_recupera_um_reprovado():
 
 
 def test_a_melhor_nota_ganha_mesmo_estando_na_primeira_epoca():
-    src = make_source([
-        ["Nome", "Teste 1", "Nota Final", "Teste 2", "Nota Final 2"],
-        ["Ana Maria Silva", "17", "18", "10", "11"],
-    ])
+    src = build_source("s1", "pauta.pdf", "pdf", RawTable(
+        rows=[["Nome", "1.ª Época", "2.ª Época"],
+              ["Ana Maria Silva", "18", "11"]],
+        title_lines=["Análise Matemática - Pauta"]))
     result = consolidate([src])
     ana = student(result, "Ana Maria Silva")["subjects"]["Análise Matemática"]
     assert ana["best"].value == 18

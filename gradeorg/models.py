@@ -29,6 +29,17 @@ ROLE_IGNORE = "ignore"
 KIND_FINAL = "final"
 KIND_COMPONENT = "component"
 
+# Modalidades de avaliacao dentro da mesma epoca. Na 1.a epoca um aluno faz uma
+# das duas: avaliacao continua (testes/frequencias) ou o exame -- que e no mesmo
+# dia do 2.o teste. A 2.a epoca e a especial sao sempre exame.
+ROUTE_CONTINUA = "continua"
+ROUTE_EXAME = "exame"
+
+ROUTE_LABELS = {
+    ROUTE_CONTINUA: "Avaliação contínua",
+    ROUTE_EXAME: "Exame",
+}
+
 
 @dataclass
 class RawTable:
@@ -51,6 +62,15 @@ class Column:
     role: str = ROLE_IGNORE
     epoca: Optional[str] = None
     kind: str = KIND_COMPONENT
+    #: Modalidade a que a coluna pertence (ver ROUTE_*). None = indiferente.
+    route: Optional[str] = None
+    #: Momento de avaliacao a que a coluna pertence (1 = o primeiro, 2 = "Teste 2").
+    moment: Optional[int] = None
+    #: Colunas com a mesma via de avaliacao partilham grupo: as que estao
+    #: preenchidas para os mesmos alunos sao a mesma nota, nao alternativas.
+    cluster: int = 0
+    #: O que os dados dizem sobre um momento posterior (texto para a pergunta).
+    evidence: str = ""
     scale: float = 20.0
     confidence: float = 0.0
     reason: str = ""
@@ -68,6 +88,10 @@ class Column:
             "role": self.role,
             "epoca": self.epoca,
             "kind": self.kind,
+            "route": self.route,
+            "moment": self.moment,
+            "cluster": self.cluster,
+            "evidence": self.evidence,
             "scale": self.scale,
             "confidence": round(self.confidence, 2),
             "reason": self.reason,
@@ -173,6 +197,7 @@ class GradeEntry:
     source_id: str
     source_label: str
     column_header: str
+    route: Optional[str] = None
     document_date: Optional[str] = None
     file_order: int = 0
     components: dict = field(default_factory=dict)   # {"Projeto": Grade, ...}

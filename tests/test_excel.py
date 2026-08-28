@@ -61,11 +61,40 @@ def test_melhor_nota_e_uma_formula_que_recalcula(workbook):
     assert sheet.cell(row=row, column=7).value == f'=IF(ISNUMBER(F{row}),ROUND(F{row},0),"—")'
 
 
+def resumo_header_row(sheet):
+    for row in range(1, 30):
+        if sheet.cell(row=row, column=1).value == "Nº Aluno":
+            return row
+    raise AssertionError("cabeçalho do Resumo não encontrado")
+
+
 def test_resumo_puxa_da_folha_da_uc_pelo_numero(workbook):
     resumo = workbook["Resumo"]
-    formula = resumo.cell(row=7, column=3).value
-    assert formula.startswith("=IFERROR(INDEX('Análise Matemática'!$F$5:$F$7")
-    assert "MATCH($A7,'Análise Matemática'!$A$5:$A$7,0)" in formula
+    linha = resumo_header_row(resumo) + 1
+    primeira = SUBJECT_HEADER_ROW + 1
+    ultima = SUBJECT_HEADER_ROW + 3
+    formula = resumo.cell(row=linha, column=3).value
+    assert formula.startswith(
+        f"=IFERROR(INDEX('Análise Matemática'!$F${primeira}:$F${ultima}")
+    assert (f"MATCH($A{linha},'Análise Matemática'!$A${primeira}:$A${ultima},0)"
+            in formula)
+
+
+def test_cada_uc_tem_a_sua_nota_minima_editavel(workbook):
+    from gradeorg.excel import SUBJECT_PASS_ROW
+    sheet = workbook["Análise Matemática"]
+    assert sheet.cell(row=SUBJECT_PASS_ROW, column=1).value == "Nota mínima de aprovação"
+    assert sheet.cell(row=SUBJECT_PASS_ROW, column=2).value == 9.5
+
+    # O Estado desta folha compara com essa célula, não com um número fixo.
+    estado = sheet.cell(row=SUBJECT_HEADER_ROW + 1, column=9).value
+    assert f"$B${SUBJECT_PASS_ROW}" in estado
+
+    # E o Resumo espelha-a.
+    resumo = workbook["Resumo"]
+    espelhos = [c.value for row in resumo.iter_rows(max_row=resumo_header_row(resumo))
+                for c in row if isinstance(c.value, str) and c.value.startswith("=")]
+    assert any(f"'Análise Matemática'!$B${SUBJECT_PASS_ROW}" in e for e in espelhos)
 
 
 def test_componentes_aparecem_com_a_epoca(workbook):
@@ -95,6 +124,23 @@ def test_so_usa_funcoes_que_o_excel_antigo_conhece(workbook):
     assert used <= SAFE_FUNCTIONS, f"funções arriscadas: {used - SAFE_FUNCTIONS}"
 
 
+def test_notas_minimas_diferentes_por_uc(tmp_path):
+    from gradeorg.consolidate import Settings
+    from gradeorg.excel import SUBJECT_PASS_ROW
+
+    a = build_source("s1", "a.pdf", "pdf", RawTable(
+        rows=[["Nome", "Nota Final"], ["Ana Maria Silva", "9,7"]],
+        title_lines=["Análise Matemática - Pauta"]))
+    b = build_source("s2", "b.pdf", "pdf", RawTable(
+        rows=[["Nome", "Nota Final"], ["Ana Maria Silva", "9,7"]],
+        title_lines=["Álgebra Linear - Pauta"]), file_order=2)
+    settings = Settings(pass_mark=9.5, subject_pass_marks={"Análise Matemática": 12.0})
+
+    book = build_workbook(consolidate([a, b], settings), ["a.pdf", "b.pdf"])
+    assert book["Análise Matemática"].cell(row=SUBJECT_PASS_ROW, column=2).value == 12.0
+    assert book["Álgebra Linear"].cell(row=SUBJECT_PASS_ROW, column=2).value == 9.5
+
+
 def test_selecao_de_alunos_e_de_ucs(tmp_path):
     src = build_source("s1", "pauta.pdf", "pdf", RawTable(
         rows=[["Nome", "Nº Aluno", "Nota Final"],
@@ -104,7 +150,8 @@ def test_selecao_de_alunos_e_de_ucs(tmp_path):
     result = consolidate([src])
     book = build_workbook(result, ["pauta.pdf"], selected_students=["id:112233"])
     sheet = book["Análise Matemática"]
-    nomes = [sheet.cell(row=r, column=2).value for r in range(5, 8)]
+    nomes = [sheet.cell(row=r, column=2).value
+             for r in range(SUBJECT_HEADER_ROW + 1, SUBJECT_HEADER_ROW + 4)]
     assert "Ana Maria Silva" in nomes
     assert "Rui Costa Lopes" not in nomes
 
@@ -123,4 +170,7 @@ def test_uc_sem_alunos_seleccionados_nao_gera_folha():
 
 
 def test_livro_sem_conflitos_diz_que_esta_tudo_bem(workbook):
-    assert "Sem conflitos" in str(workbook["Avisos"].cell(row=5, column=1).value)
+    avisos = workbook["Avisos"]
+    textos = [c.value for row in avisos.iter_rows(max_row=10) for c in row
+              if isinstance(c.value, str)]
+    assert any("Sem conflitos" in t for t in textos)

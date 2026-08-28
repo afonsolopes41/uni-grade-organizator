@@ -25,6 +25,7 @@ from .models import (
     ROLE_GRADE,
     ROLE_ID,
     ROLE_NAME,
+    ROUTE_LABELS,
     GradeEntry,
 )
 from .normalize import (
@@ -45,9 +46,18 @@ DEFAULT_SCALE = 20.0
 
 @dataclass
 class Settings:
+    #: Nota minima usada nas UCs que nao tenham uma propria.
     pass_mark: float = DEFAULT_PASS_MARK
+    #: Nota minima por UC -- cada cadeira tem a sua.
+    subject_pass_marks: dict = field(default_factory=dict)
     scale: float = DEFAULT_SCALE
     merge_by_name: bool = True
+
+    def pass_mark_for(self, subject: Optional[str]) -> float:
+        """A nota minima desta UC, ou a de omissao se nao tiver uma."""
+        if subject and subject in self.subject_pass_marks:
+            return self.subject_pass_marks[subject]
+        return self.pass_mark
 
     @classmethod
     def from_dict(cls, data: dict) -> "Settings":
@@ -61,11 +71,21 @@ class Settings:
             settings.scale = float(data.get("scale", DEFAULT_SCALE)) or DEFAULT_SCALE
         except (TypeError, ValueError):
             pass
+        for subject, value in (data.get("subject_pass_marks") or {}).items():
+            if value in (None, ""):
+                settings.subject_pass_marks.pop(subject, None)
+                continue
+            try:
+                settings.subject_pass_marks[subject] = float(value)
+            except (TypeError, ValueError):
+                continue
         settings.merge_by_name = bool(data.get("merge_by_name", True))
         return settings
 
     def to_dict(self) -> dict:
-        return {"pass_mark": self.pass_mark, "scale": self.scale,
+        return {"pass_mark": self.pass_mark,
+                "subject_pass_marks": dict(self.subject_pass_marks),
+                "scale": self.scale,
                 "merge_by_name": self.merge_by_name}
 
 
@@ -152,6 +172,7 @@ def extract_records(sources: list, settings: Settings) -> list:
                     source_id=source.id,
                     source_label=source.label,
                     column_header=column.header,
+                    route=column.route,
                     document_date=source.document_date,
                     file_order=source.file_order,
                     components=components,
@@ -314,6 +335,14 @@ def _rescale(grade: Grade, scale: float) -> Grade:
                  raw=f"{raw} (de {grade.value:g} em 0-{grade.scale:g})")
 
 
+def _by_column(entries: list) -> dict:
+    """Agrupa as notas por ficheiro e coluna de origem."""
+    grouped: dict = {}
+    for entry in entries:
+        grouped.setdefault((entry.source_id, entry.column_header), []).append(entry)
+    return grouped
+
+
 def _rank_entries(entries: list) -> list:
     """Ordena as versoes da mesma nota, da que vale da que nao vale.
 
@@ -376,11 +405,42 @@ def consolidate(sources: list, settings: Optional[Settings] = None) -> dict:
         for subject, by_epoca in grouped.items():
             epoca_results: dict = {}
             for epoca, entries in by_epoca.items():
-                entries = _rank_entries(entries)
-                winner = entries[0]
+                # Dentro do mesmo ficheiro, varias notas finais na mesma epoca
+                # sao vias alternativas (avaliacao continua ou exame): o aluno
+                # so faz uma, por isso fica a que tiver -- a melhor, se tiver as
+                # duas. Entre ficheiros diferentes ja e um conflito de versoes.
+                # Duas linhas do mesmo aluno na mesma coluna do mesmo ficheiro
+                # nao sao vias alternativas: e o mesmo dado escrito duas vezes.
+                for key, repeated in _by_column(entries).items():
+                    valores = {(e.grade.value, e.grade.status) for e in repeated}
+                    if len(valores) > 1:
+                        conflicts.append({
+                            "type": "linha repetida",
+                            "student": name,
+                            "subject": subject,
+                            "epoca": EPOCA_LABELS.get(epoca, epoca),
+                            "detail": f"O aluno aparece mais do que uma vez em «{key[1]}» "
+                                      f"({repeated[0].source_label}) com valores diferentes: "
+                                      + "; ".join(e.grade.label for e in repeated),
+                            "chosen": max(repeated, key=lambda e: e.grade.rank()).grade.label,
+                            "severity": "warning",
+                        })
+
+                per_source: dict = {}
+                for entry in entries:
+                    current = per_source.get(entry.source_id)
+                    if current is None or entry.grade.rank() > current.grade.rank():
+                        per_source[entry.source_id] = entry
+                # So conta como via alternativa a que tem mesmo nota: um aluno
+                # que fez os testes tem a coluna do exame vazia, e vice-versa.
+                routes = [e for e in entries
+                          if e is not per_source.get(e.source_id) and not e.grade.is_empty]
+
+                ranked = _rank_entries(list(per_source.values()))
+                winner = ranked[0]
 
                 distinct = {
-                    (e.grade.value, e.grade.status) for e in entries
+                    (e.grade.value, e.grade.status) for e in ranked
                     if not (e.grade.is_empty and e.components)
                 }
                 if len(distinct) > 1:
@@ -391,9 +451,9 @@ def consolidate(sources: list, settings: Optional[Settings] = None) -> dict:
                         "epoca": EPOCA_LABELS.get(epoca, epoca),
                         "detail": "Valores diferentes em ficheiros diferentes: "
                                   + "; ".join(
-                                      f"{e.grade.label} ({e.source_label})" for e in entries),
+                                      f"{e.grade.label} ({e.source_label})" for e in ranked),
                         "chosen": f"{winner.grade.label} ({winner.source_label}) "
-                                  f"— {_priority_reason(entries)}",
+                                  f"— {_priority_reason(ranked)}",
                         "severity": "warning",
                     })
 
@@ -409,10 +469,21 @@ def consolidate(sources: list, settings: Optional[Settings] = None) -> dict:
                     "source_id": winner.source_id,
                     "source_label": winner.source_label,
                     "column": winner.column_header,
+                    "route": winner.route,
+                    "route_label": ROUTE_LABELS.get(winner.route or "", ""),
                     "components": components,
-                    "alternatives": [
-                        {"label": e.grade.label, "source": e.source_label}
-                        for e in entries[1:]
+                    # Outras versoes do mesmo dado, noutros ficheiros.
+                    "other_versions": [
+                        {"label": e.grade.label, "source": e.source_label,
+                         "column": e.column_header}
+                        for e in ranked[1:]
+                    ],
+                    # Outras vias de avaliacao do mesmo ficheiro que o aluno
+                    # tambem tem preenchidas (raro: normalmente so faz uma).
+                    "other_routes": [
+                        {"label": e.grade.label, "column": e.column_header,
+                         "route": ROUTE_LABELS.get(e.route or "", "")}
+                        for e in routes
                     ],
                 }
 
@@ -422,7 +493,8 @@ def consolidate(sources: list, settings: Optional[Settings] = None) -> dict:
                 "epocas": epoca_results,
                 "best_epoca": best_epoca,
                 "best": best,
-                "approved": _approved(best, settings),
+                "pass_mark": settings.pass_mark_for(subject),
+                "approved": _approved(best, settings, subject),
             }
 
         students.append({
@@ -437,6 +509,7 @@ def consolidate(sources: list, settings: Optional[Settings] = None) -> dict:
 
     students.sort(key=lambda s: _sort_key(s["name"]))
     subject_names = sorted({s for st in students for s in st["subjects"]}, key=_sort_key)
+    pass_marks = {s: settings.pass_mark_for(s) for s in subject_names}
 
     for suggestion in find_similar_names(clusters):
         warnings.append({
@@ -454,6 +527,7 @@ def consolidate(sources: list, settings: Optional[Settings] = None) -> dict:
         "conflicts": conflicts,
         "warnings": warnings,
         "settings": settings.to_dict(),
+        "pass_marks": pass_marks,
         "stats": _stats(students, subject_names, settings),
     }
 
@@ -473,11 +547,11 @@ def _pick_best(epoca_results: dict, settings: Settings):
     return best_key, best
 
 
-def _approved(grade: Optional[Grade], settings: Settings):
+def _approved(grade: Optional[Grade], settings: Settings, subject: Optional[str] = None):
     if grade is None:
         return None
     if grade.value is not None:
-        return _to_scale(grade, settings.scale) >= settings.pass_mark - 1e-9
+        return _to_scale(grade, settings.scale) >= settings.pass_mark_for(subject) - 1e-9
     if grade.status == "APROVADO":
         return True
     if grade.status in ("REPROVADO", "FALTOU", "DESISTIU", "NAO_ADMITIDO"):
@@ -535,13 +609,17 @@ def to_json(result: dict) -> dict:
                     "grade": info["grade"].to_dict(),
                     "source_label": info["source_label"],
                     "column": info["column"],
+                    "route": info.get("route"),
+                    "route_label": info.get("route_label", ""),
+                    "other_versions": info.get("other_versions", []),
+                    "other_routes": info.get("other_routes", []),
                     "components": {k: v.to_dict() for k, v in info["components"].items()},
-                    "alternatives": info["alternatives"],
                 }
             best: Optional[Grade] = data["best"]
             subjects[subject] = {
                 "subject": subject,
                 "epocas": epocas,
+                "pass_mark": data["pass_mark"],
                 "best_epoca": data["best_epoca"],
                 "best_epoca_label": EPOCA_LABELS.get(data["best_epoca"] or "", "—"),
                 "best": best.to_dict() if best else None,
@@ -563,5 +641,6 @@ def to_json(result: dict) -> dict:
         "conflicts": result["conflicts"],
         "warnings": result["warnings"],
         "settings": result["settings"],
+        "pass_marks": result.get("pass_marks", {}),
         "stats": result["stats"],
     }

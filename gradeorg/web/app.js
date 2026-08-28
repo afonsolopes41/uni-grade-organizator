@@ -333,6 +333,11 @@ function renderSources() {
             <option value="component" ${column.kind === 'component' ? 'selected' : ''}>Componente</option>
           </select>
         </td>
+        <td>${column.moment && column.moment > 1
+              ? `<span class="badge amber" title="${escapeHtml(column.evidence || '')}">2.º momento</span>`
+              : ''}${column.route
+              ? `<span class="badge">${column.route === 'exame' ? 'Exame' : 'Contínua'}</span>`
+              : ''}</td>
         <td class="samples" title="${escapeHtml(column.samples.join(' · '))}">
           ${escapeHtml(column.samples.join(' · ')) || '—'}</td>
         <td><span class="badge ${column.confidence >= 0.7 ? 'green' : column.confidence >= 0.5 ? 'amber' : 'red'}"
@@ -353,7 +358,7 @@ function renderSources() {
         </div>
         <table class="col-table">
           <thead><tr>
-            <th>Coluna</th><th>É</th><th>Época</th><th>Tipo</th>
+            <th>Coluna</th><th>É</th><th>Época</th><th>Tipo</th><th>Via</th>
             <th>Exemplos</th><th>Confiança</th>
           </tr></thead>
           <tbody>${rows}</tbody>
@@ -399,6 +404,8 @@ function renderResults() {
       As notas abaixo usam os palpites automáticos. Volte a «Confirmar» para as rever.</span>
     </div>` : '';
 
+  renderPassMarks();
+
   $('subject-filters').innerHTML = data.subjects.map((subject) => `
     <button class="chip ${state.hiddenSubjects.has(subject) ? '' : 'is-on'}"
             data-subject="${escapeHtml(subject)}">${escapeHtml(subject)}</button>`).join('');
@@ -413,6 +420,43 @@ function renderResults() {
 
   renderTable();
   renderNotices();
+}
+
+function renderPassMarks() {
+  const data = state.results;
+  const marks = data.pass_marks || {};
+  const padrao = data.settings?.pass_mark ?? 9.5;
+  const proprias = data.settings?.subject_pass_marks || {};
+
+  if (!data.subjects.length) { $('pass-marks').innerHTML = ''; return; }
+
+  $('pass-marks').innerHTML = `
+    <div class="minimos">
+      <span class="titulo">Nota mínima de aprovação</span>
+      ${data.subjects.map((subject) => `
+        <label>
+          <span>${escapeHtml(subject)}</span>
+          <input type="number" min="0" max="20" step="0.5"
+                 value="${marks[subject] ?? padrao}"
+                 data-pass-mark="${escapeHtml(subject)}">
+        </label>`).join('')}
+      <span class="nota">cada cadeira tem a sua — em branco usa ${padrao}</span>
+    </div>`;
+
+  $('pass-marks').querySelectorAll('[data-pass-mark]').forEach((input) => {
+    input.addEventListener('change', async () => {
+      const subject = input.dataset.passMark;
+      const raw = input.value.trim();
+      const value = raw === '' ? '' : parseFloat(raw);
+      if (raw !== '' && Number.isNaN(value)) { input.value = proprias[subject] ?? padrao; return; }
+      busy(true, 'A aplicar…');
+      try {
+        await postJSON('/api/answers', { settings: { subject_pass_marks: { [subject]: value } } });
+        state.results = await api('/api/results');
+        renderResults();
+      } catch (error) { toast(error.message, true); } finally { busy(false); }
+    });
+  });
 }
 
 const visibleSubjects = () =>
@@ -518,7 +562,8 @@ function detailRow(student, subjects) {
       const components = Object.entries(info.components || {});
       return `
         <div class="epoca-line ${best ? 'is-best' : ''}">
-          <span>${escapeHtml(epoca.label)}</span>
+          <span>${escapeHtml(epoca.label)}${
+            info.route_label ? `<span class="via">${escapeHtml(info.route_label)}</span>` : ''}</span>
           <span>${escapeHtml(info.grade.label)}
             ${best ? '<span class="tag">melhor</span>' : ''}</span>
         </div>
@@ -535,7 +580,15 @@ function detailRow(student, subjects) {
         <div class="source-note">
           Nota final: <b>${escapeHtml(data.best?.label ?? '—')}</b>
           ${data.best_rounded != null ? ` (arredondada: ${data.best_rounded})` : ''}
+          · mínima para passar: <b>${data.pass_mark}</b>
+          ${bestInfo.column ? `<br>Coluna: ${escapeHtml(bestInfo.column)}` : ''}
           ${bestInfo.source_label ? `<br>Origem: ${escapeHtml(bestInfo.source_label)}` : ''}
+          ${(bestInfo.other_routes || []).length ? `<br>Outra via: ${
+            bestInfo.other_routes.map((a) =>
+              escapeHtml(`${a.route || a.column}: ${a.label}`)).join(' · ')}` : ''}
+          ${(bestInfo.other_versions || []).length ? `<br>Noutros ficheiros: ${
+            bestInfo.other_versions.map((a) =>
+              escapeHtml(`${a.label} (${a.source})`)).join(' · ')}` : ''}
         </div>
       </div>`;
   }).join('');

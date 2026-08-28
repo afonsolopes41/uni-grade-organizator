@@ -44,8 +44,10 @@ BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 
 GRADE_FORMAT = "0.##"
 
-#: Linha do cabecalho nas folhas de UC (titulo + subtitulo + linha em branco).
-SUBJECT_HEADER_ROW = 4
+#: Linha do cabecalho nas folhas de UC.
+#: 1 titulo, 2 subtitulo, 3 nota minima da UC, 4 em branco, 5 cabecalho.
+SUBJECT_PASS_ROW = 3
+SUBJECT_HEADER_ROW = 5
 
 
 def _subject_extent(count: int):
@@ -171,6 +173,7 @@ def build_workbook(result: dict, source_labels: Optional[list] = None,
     """Constroi o livro a partir do resultado de ``consolidate.consolidate``."""
     settings = result["settings"]
     pass_mark = float(settings.get("pass_mark", 9.5))
+    pass_marks = {k: float(v) for k, v in (result.get("pass_marks") or {}).items()}
 
     students = result["students"]
     if selected_students:
@@ -199,11 +202,12 @@ def build_workbook(result: dict, source_labels: Optional[list] = None,
 
     summary = workbook.create_sheet("Resumo")
     _build_summary(summary, students, subjects, subject_sheets, subject_extent,
-                   pass_mark, stamp, origem)
+                   pass_marks, pass_mark, stamp, origem)
 
     for subject in subjects:
         sheet = workbook.create_sheet(subject_sheets[subject])
-        _build_subject_sheet(sheet, subject, students, pass_mark, stamp)
+        _build_subject_sheet(sheet, subject, students,
+                             pass_marks.get(subject, pass_mark), stamp)
 
     _build_detail(workbook.create_sheet("Detalhe"), students, subjects, stamp)
     _build_notices(workbook.create_sheet("Avisos"), result, stamp)
@@ -218,23 +222,33 @@ def build_workbook(result: dict, source_labels: Optional[list] = None,
 
 def _build_summary(sheet: Worksheet, students: list, subjects: list,
                    subject_sheets: dict, subject_extent: dict,
-                   pass_mark: float, stamp: str, origem: str) -> None:
-    width = 2 + len(subjects) + 3
+                   pass_marks: dict, default_pass: float, stamp: str, origem: str) -> None:
+    width = max(2 + len(subjects) + 3, 4)
     row = _title_block(sheet, width, "Notas consolidadas — resumo por aluno",
                        f"Gerado em {stamp} · Ficheiros: {origem}")
 
-    sheet.cell(row=row, column=1, value="Nota mínima de aprovação").font = Font(
-        name=FONT, size=10, bold=True)
-    pass_cell = sheet.cell(row=row, column=2, value=pass_mark)
-    pass_cell.number_format = GRADE_FORMAT
-    pass_cell.font = Font(name=FONT, size=10, bold=True, color="0000FF")
-    pass_cell.fill = PatternFill("solid", fgColor="FFF9C4")
-    pass_cell.alignment = Alignment(horizontal="center")
+    # A nota minima de cada cadeira vive na folha dessa cadeira; aqui fica um
+    # espelho, para se ver tudo de uma vez.
+    sheet.cell(row=row, column=1, value="Nota mínima por cadeira").font = Font(
+        name=FONT, size=11, bold=True, color=INK)
     sheet.cell(row=row, column=3,
-               value="↖ valor editável: as colunas «Aprovadas» e «Estado» recalculam.").font = Font(
+               value="editam-se na folha de cada UC (célula amarela)").font = Font(
         name=FONT, size=9, italic=True, color=MUTED)
-    pass_ref = f"{quote_sheetname(sheet.title)}!$B${row}"
-    row += 2
+    row += 1
+
+    pass_refs = {}
+    for subject in subjects:
+        target = quote_sheetname(subject_sheets[subject])
+        sheet.cell(row=row, column=1, value=subject).font = Font(name=FONT, size=10)
+        mirror = sheet.cell(row=row, column=2, value=f"={target}!$B${SUBJECT_PASS_ROW}")
+        mirror.number_format = GRADE_FORMAT
+        mirror.font = Font(name=FONT, size=10, bold=True, color=GREEN)
+        mirror.alignment = Alignment(horizontal="center")
+        pass_refs[subject] = f"{quote_sheetname(sheet.title)}!$B${row}"
+        row += 1
+    if not subjects:
+        pass_refs = {}
+    row += 1
 
     headers = ["Nº Aluno", "Nome"] + subjects + ["Média", "Aprovadas", "UCs"]
     widths = [11, 42] + [max(14, min(24, len(s) // 2 + 8)) for s in subjects] + [10, 11, 8]
@@ -276,16 +290,23 @@ def _build_summary(sheet: Worksheet, students: list, subjects: list,
         average = sheet.cell(row=current, column=3 + len(subjects),
                              value=f'=IFERROR(ROUND(AVERAGE({span}),2),"—")')
         average.number_format = "0.00"
-        sheet.cell(row=current, column=4 + len(subjects),
-                   value=f'=COUNTIF({span},">="&{pass_ref})')
+        # Cada UC tem a sua nota minima, por isso a contagem e coluna a coluna.
+        counts = "+".join(
+            f'COUNTIF({get_column_letter(3 + index)}{current},">="&{pass_refs[subject]})'
+            for index, subject in enumerate(subjects)) or "0"
+        sheet.cell(row=current, column=4 + len(subjects), value=f"={counts}")
         sheet.cell(row=current, column=5 + len(subjects), value=len(student["subjects"]))
 
     last_data = first_data + len(students) - 1
     if students:
         _style_body(sheet, first_data, last_data, width)
-        grade_ref = (f"{get_column_letter(3)}{first_data}:"
-                     f"{get_column_letter(3 + len(subjects))}{last_data}")
-        _grade_rules(sheet, grade_ref, pass_mark)
+        # A formatacao usa a nota minima de cada coluna.
+        for index, subject in enumerate(subjects):
+            letter = get_column_letter(3 + index)
+            _grade_rules(sheet, f"{letter}{first_data}:{letter}{last_data}",
+                         pass_marks.get(subject, default_pass))
+        media = get_column_letter(3 + len(subjects))
+        _grade_rules(sheet, f"{media}{first_data}:{media}{last_data}", default_pass)
         sheet.auto_filter.ref = f"A{header_row}:{get_column_letter(width)}{last_data}"
 
     sheet.freeze_panes = sheet.cell(row=first_data, column=3)
@@ -360,13 +381,25 @@ def _build_subject_sheet(sheet: Worksheet, subject: str, students: list,
     headers = fixed + components
     width = len(headers)
 
-    row = _title_block(sheet, width, subject,
-                       f"{len(rows)} alunos · melhor de 1.ª, 2.ª e época especial · "
-                       f"gerado em {stamp}")
-    assert row == SUBJECT_HEADER_ROW, "as fórmulas do Resumo dependem desta linha"
+    _title_block(sheet, width, subject,
+                 f"{len(rows)} alunos · melhor de 1.ª, 2.ª e época especial · "
+                 f"gerado em {stamp}")
+
+    # Cada cadeira tem a sua nota minima. Fica aqui, editavel, e as colunas
+    # «Estado» desta folha e as contagens do Resumo seguem-na.
+    sheet.cell(row=SUBJECT_PASS_ROW, column=1,
+               value="Nota mínima de aprovação").font = Font(name=FONT, size=10, bold=True)
+    pass_cell = sheet.cell(row=SUBJECT_PASS_ROW, column=2, value=pass_mark)
+    pass_cell.number_format = GRADE_FORMAT
+    pass_cell.font = Font(name=FONT, size=10, bold=True, color="0000FF")
+    pass_cell.fill = PatternFill("solid", fgColor="FFF9C4")
+    pass_cell.alignment = Alignment(horizontal="center")
+    sheet.cell(row=SUBJECT_PASS_ROW, column=3,
+               value="↖ editável — a coluna «Estado» recalcula.").font = Font(
+        name=FONT, size=9, italic=True, color=MUTED)
 
     widths = [11, 40, 13, 13, 15, 13, 12, 16, 13, 30] + [13] * len(components)
-    header_row = row
+    header_row = SUBJECT_HEADER_ROW
     _header_row(sheet, header_row, headers, widths)
 
     first_data = header_row + 1
@@ -411,7 +444,7 @@ def _build_subject_sheet(sheet: Worksheet, subject: str, students: list,
 
         state = sheet.cell(row=current, column=9)
         state.value = (f'=IF(NOT(ISNUMBER(F{current})),"—",'
-                       f'IF(F{current}>={pass_mark},"Aprovado","Reprovado"))'
+                       f'IF(F{current}>=$B${SUBJECT_PASS_ROW},"Aprovado","Reprovado"))'
                        if best is not None and best.value is not None
                        else _state_label(data["approved"]))
 

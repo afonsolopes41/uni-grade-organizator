@@ -15,12 +15,16 @@ from .models import (
     EPOCA_1,
     EPOCA_2,
     EPOCA_ESP,
+    EPOCA_LABELS,
+    EPOCAS,
     KIND_COMPONENT,
     KIND_FINAL,
     ROLE_GRADE,
     ROLE_ID,
     ROLE_IGNORE,
     ROLE_NAME,
+    ROUTE_CONTINUA,
+    ROUTE_EXAME,
     Column,
     Guess,
     Question,
@@ -57,16 +61,24 @@ STRONG_EPOCA = [
 
 # Marcadores fracos: sugerem uma epoca, mas tambem podem ser so componentes
 # ("Exame 1" e "Exame 2" dentro da mesma epoca, por exemplo).
+# Marcadores fracos: so o *primeiro* momento de avaliacao identifica a epoca
+# sem ambiguidade -- um "Teste 1" so existe na avaliacao continua, que e sempre
+# 1.a epoca. Um "Teste 2" nao diz nada: tanto pode ser o segundo teste dessa
+# mesma epoca (feito no dia do exame) como a 2.a epoca. Esse caso e decidido
+# pelos dados em _resolve_moments, e confirmado pelo utilizador.
 WEAK_EPOCA = [
-    (EPOCA_ESP, ["teste 3", "exame 3", "prova 3", "3 teste", "3 exame", "3 prova",
-                 "t3", "e3"]),
-    (EPOCA_2, ["teste 2", "exame 2", "prova 2", "2 teste", "2 exame", "2 prova",
-               "t2", "e2"]),
-    (EPOCA_1, ["teste 1", "exame 1", "prova 1", "1 teste", "1 exame", "1 prova",
-               "t1", "e1"]),
+    (EPOCA_1, ["teste 1", "exame 1", "prova 1", "frequencia 1",
+               "1 teste", "1 exame", "1 prova", "t1", "e1"]),
 ]
 
-_DIGIT_EPOCA = {"1": EPOCA_1, "2": EPOCA_2, "3": EPOCA_ESP}
+#: Palavras que, com um "2" ou "3" ao lado, indicam um momento de avaliacao
+#: posterior ("Nota Final 2"), ao contrario de "Ex 2", que e o exercicio 2.
+_MOMENT_WORDS = {"teste", "exame", "prova", "frequencia", "nota", "final",
+                 "avaliacao", "classificacao", "class", "nf", "cf", "epoca"}
+
+_EXAM_WORDS = ["exame", "recurso", "prova"]
+_CONTINUA_WORDS = ["teste", "frequencia", "continua", "mini", "projeto",
+                   "projecto", "trabalho", "participacao"]
 
 FINAL_WORDS = [
     "avaliacao final", "classificacao final", "nota final", "class final",
@@ -88,10 +100,7 @@ COMPONENT_WORDS = [
     "teorica", "pratica", "tpc", "bonus", "moodle", "teste", "exame", "prova",
 ]
 
-# Palavras que legitimam um numero final no cabecalho como indicador de epoca
-# ("Nota Final 2" -> 2.a epoca), ao contrario de "Ex 2", que e so o exercicio 2.
-EPOCA_DIGIT_CONTEXT = ["nota", "final", "avaliacao", "classificacao", "exame",
-                       "teste", "prova", "epoca", "class", "cf", "nf"]
+
 
 IGNORE_WORDS = ["obs", "observacoes", "notas obs", "comentario", "email", "turma",
                 "curso", "ects", "estado", "situacao", "assinatura", "rubrica"]
@@ -238,9 +247,52 @@ def classify_columns(header_row: list, data_rows: list, file_epoca: Optional[str
         columns.append(_classify_one(column, norm_header(header), stats))
 
     _pick_name_and_id(columns, data_rows)
-    _assign_epocas(columns, file_epoca)
+    _assign_epocas(columns, file_epoca, data_rows)
+    _compute_clusters(columns, data_rows)
     _pick_final_columns(columns)
     return columns
+
+
+def _compute_clusters(columns: list, data_rows: list) -> None:
+    """Agrupa as colunas de notas de cada epoca por via de avaliacao.
+
+    Duas colunas preenchidas para os *mesmos* alunos sao a mesma nota escrita de
+    duas maneiras ("Nota Final" e "Avaliação Final"). Duas colunas preenchidas
+    para alunos *diferentes* sao vias alternativas -- avaliacao continua ou
+    exame de 1.a epoca -- e cada aluno so faz uma delas, por isso contam ambas.
+    """
+    grades = [c for c in columns if c.role == ROLE_GRADE]
+    # So as candidatas a nota final entram no agrupamento: uma coluna
+    # preenchida para a turma toda ("Teste 1") ligaria por transitividade duas
+    # vias que na verdade sao disjuntas.
+    finals = [c for c in grades if c.kind == KIND_FINAL]
+    filled = {}
+    for column in finals:
+        filled[column.index] = {
+            index for index, row in enumerate(data_rows)
+            if not parse_grade(_cell(row, column.index), scale=column.scale).is_empty
+        }
+
+    parent = {c.index: c.index for c in grades}
+
+    def find(item):
+        while parent[item] != item:
+            parent[item] = parent[parent[item]]
+            item = parent[item]
+        return item
+
+    for position, left in enumerate(finals):
+        for right in finals[position + 1 :]:
+            if left.epoca != right.epoca:
+                continue
+            a, b = filled[left.index], filled[right.index]
+            if not a or not b:
+                continue
+            if len(a & b) / len(a | b) >= 0.5:
+                parent[find(right.index)] = find(left.index)
+
+    for column in grades:
+        column.cluster = find(column.index)
 
 
 def _classify_one(column: Column, header: str, stats: dict) -> Column:
@@ -300,9 +352,11 @@ def _classify_one(column: Column, header: str, stats: dict) -> Column:
             column.kind = KIND_FINAL
             column.confidence = 0.75
             column.reason = f"«{column.header}» é a nota da época"
-        elif matched_final and (not matched_comp or len(matched_final) >= len(matched_comp)):
+        elif matched_final:
+            # "Nota Exame" e a nota da via de exame; "Nota Trabalho" tambem entra
+            # como candidata, mas perde para "Nota Final" na escolha seguinte.
             column.kind = KIND_FINAL
-            column.confidence = 0.8
+            column.confidence = 0.8 if not matched_comp else 0.55
             column.reason = f"cabeçalho «{column.header}» indica nota final"
         else:
             column.kind = KIND_COMPONENT
@@ -375,44 +429,194 @@ def epoca_from_text(text: str, strong_only: bool = False):
     for epoca, words in WEAK_EPOCA:
         if _has_word(header, words):
             return epoca, "weak"
-    # "Nota Final 2" -> 2.a epoca; "Ex 2" -> so o exercicio 2, nao uma epoca.
-    tokens = header.split()
-    if len(tokens) >= 2 and tokens[-1] in _DIGIT_EPOCA:
-        if _has_word(" ".join(tokens[:-1]), EPOCA_DIGIT_CONTEXT):
-            return _DIGIT_EPOCA[tokens[-1]], "weak"
     return None, None
 
 
-def _assign_epocas(columns: list, file_epoca: Optional[str]) -> None:
-    """Distribui as colunas de nota pelas epocas.
+def moment_index(header: str):
+    """Numero do momento de avaliacao no cabecalho, se houver.
 
-    Regras:
-    - marcador forte no cabecalho manda sempre;
-    - se o ficheiro/folha ja identifica a epoca, marcadores fracos ("Exame 2")
-      sao tratados como componentes da mesma epoca, nao como outra epoca;
-    - sem epoca de ficheiro, um marcador fraco abre um bloco: as colunas
-      seguintes sem marcador pertencem a esse bloco.
+    ``"Teste 2"`` e ``"Nota Final 2"`` devolvem 2; ``"Ex 2"`` devolve None,
+    porque ai o 2 e o numero do exercicio, nao do momento.
     """
-    current = None
-    for column in columns:
-        if column.role != ROLE_GRADE:
-            continue
-        epoca, strength = epoca_from_text(column.header)
-        if strength == "strong":
-            current = epoca
-            column.epoca = epoca
-            column.confidence = max(column.confidence, 0.9)
-        elif strength == "weak" and file_epoca is None:
-            current = epoca
-            column.epoca = epoca
-            column.confidence = max(column.confidence, 0.6)
-        else:
-            column.epoca = current or file_epoca
+    tokens = norm_header(header).split()
+    for position, token in enumerate(tokens):
+        if token in ("2", "3"):
+            rest = set(tokens[:position] + tokens[position + 1 :])
+            if rest & _MOMENT_WORDS:
+                return int(token)
+    return None
 
-    # Colunas antes do primeiro marcador ficam com a epoca do ficheiro (ou None).
-    for column in columns:
-        if column.role == ROLE_GRADE and column.epoca is None:
-            column.epoca = file_epoca
+
+def route_of(header: str):
+    """Modalidade sugerida pelo cabecalho: exame ou avaliacao continua."""
+    normalized = norm_header(header)
+    if _has_word(normalized, _EXAM_WORDS):
+        return ROUTE_EXAME
+    if _has_word(normalized, _CONTINUA_WORDS):
+        return ROUTE_CONTINUA
+    return None
+
+
+def _assign_epocas(columns: list, file_epoca: Optional[str], data_rows: list) -> None:
+    """Reparte as colunas de nota por blocos e atribui uma epoca a cada bloco.
+
+    Um bloco e um momento de avaliacao. O primeiro e sempre a 1.a epoca. Um
+    marcador forte ("2.ª Época", "Recurso") abre um bloco com epoca conhecida.
+    Um "Teste 2" ou "Nota Final 2" abre um bloco cuja epoca *nao* se sabe: tanto
+    pode ser o segundo teste da mesma epoca -- que se faz no dia do exame --
+    como a 2.a epoca. Isso decide-se olhando para quem tem nota la.
+    """
+    grade_columns = [c for c in columns if c.role == ROLE_GRADE]
+    if not grade_columns:
+        return
+
+    base = {"moment": 1, "epoca": file_epoca, "strong": file_epoca is not None,
+            "columns": []}
+    blocks = [base]
+    current = base
+    # Colunas do primeiro bloco anteriores a qualquer marcador ("Projeto" antes
+    # de "Teste 1"): sao componentes comuns, contam para todas as epocas.
+    shared: list = []
+
+    for column in grade_columns:
+        epoca, strength = epoca_from_text(column.header)
+        moment = moment_index(column.header)
+
+        if strength == "strong":
+            current = {"moment": None, "epoca": epoca, "strong": True, "columns": []}
+            blocks.append(current)
+        elif moment and file_epoca is None and current["moment"] != moment:
+            # "Teste 2", "Nota Final 2" e "Avaliação Final 2" sao o mesmo
+            # momento: so a primeira abre o bloco.
+            current = {"moment": moment, "epoca": None, "strong": False, "columns": []}
+            blocks.append(current)
+        elif strength == "weak" and current["epoca"] is None:
+            # "Teste 1" so existe na avaliacao continua: e 1.a epoca.
+            current["epoca"] = epoca
+        elif current is base and current["epoca"] is None:
+            shared.append(column)
+
+        current["columns"].append(column)
+        column.moment = current["moment"]
+
+    _resolve_moments(blocks, data_rows)
+
+    # So faz sentido falar de componente comum se houver mais do que uma epoca.
+    epocas_encontradas = {b["epoca"] for b in blocks if b["epoca"]}
+    if len(epocas_encontradas) < 2:
+        shared = []
+
+    for block in blocks:
+        for column in block["columns"]:
+            if column in shared:
+                column.epoca = None
+                column.route = column.route or route_of(column.header)
+                continue
+            column.epoca = block["epoca"]
+            column.route = column.route or route_of(column.header) or block.get("route")
+            if block["epoca"] in (EPOCA_2, EPOCA_ESP):
+                # A 2.a epoca e a especial sao sempre exame.
+                column.route = ROUTE_EXAME
+            if block.get("evidence"):
+                column.evidence = block["evidence"]
+
+
+def _resolve_moments(blocks: list, data_rows: list) -> None:
+    """Decide a epoca dos blocos que so dizem "momento 2" ou "momento 3"."""
+    for position, block in enumerate(blocks):
+        if block["epoca"] is not None or block["moment"] in (None, 1):
+            continue
+
+        previous = _previous_decided(blocks, position)
+        verdict, evidence = _moment_verdict(previous, block, data_rows)
+        block["evidence"] = evidence
+        if verdict == "continua":
+            block["epoca"] = previous["epoca"] or EPOCA_1
+            block["route"] = ROUTE_CONTINUA
+        else:
+            block["epoca"] = _next_epoca(previous["epoca"] or EPOCA_1)
+            block["route"] = ROUTE_EXAME
+
+    # O primeiro bloco, se nada o identificou, e a 1.a epoca -- e sempre o
+    # primeiro momento de avaliacao do ano.
+    for block in blocks:
+        if block["epoca"] is None and block["moment"] == 1 and len(blocks) > 1:
+            block["epoca"] = EPOCA_1
+
+
+def _previous_decided(blocks: list, position: int) -> dict:
+    for block in reversed(blocks[:position]):
+        if block["epoca"] is not None or block["moment"] == 1:
+            return block
+    return blocks[0]
+
+
+def _next_epoca(epoca: str) -> str:
+    if epoca not in EPOCAS:
+        return EPOCA_2
+    return EPOCAS[min(EPOCAS.index(epoca) + 1, len(EPOCAS) - 1)]
+
+
+def _moment_verdict(previous: dict, block: dict, data_rows: list):
+    """Olha para os dados: quem tem nota neste segundo momento?
+
+    Se so la aparecem os alunos que chumbaram no primeiro, e recurso -- ou seja,
+    outra epoca. Se aparece la a turma quase toda, e o segundo teste da mesma
+    epoca. Devolve ``(veredicto, texto da evidencia)``.
+    """
+    first = _block_final(previous)
+    second = _block_final(block)
+    if second is None or not data_rows:
+        return "recurso", ""
+
+    total = len(data_rows)
+    with_second, failed_first = 0, 0
+    threshold = 9.5 * (second.scale or 20.0) / 20.0
+
+    for row in data_rows:
+        value = parse_grade(_cell(row, second.index), scale=second.scale)
+        if value.is_empty:
+            continue
+        with_second += 1
+        if first is None:
+            continue
+        before = parse_grade(_cell(row, first.index), scale=first.scale)
+        if before.value is not None:
+            if before.value < threshold:
+                failed_first += 1
+        elif before.status in ("REPROVADO", "NAO_ADMITIDO", "FALTOU", "DESISTIU"):
+            failed_first += 1
+
+    if not with_second:
+        return "recurso", (f"Ninguém tem nota em «{second.header}» — não dá para "
+                           "perceber pelos dados o que esta coluna é.")
+
+    coverage = with_second / max(total, 1)
+    failed_share = failed_first / with_second if first is not None else 0.0
+    detail = (f"{with_second} de {total} alunos têm nota em «{second.header}»"
+              + (f", e {failed_first} desses não tinham passado no momento anterior"
+                 if first is not None else "") + ".")
+
+    if first is not None and failed_share >= 0.8 and coverage <= 0.7:
+        return "recurso", detail + " Só lá vão os que chumbaram: parece 2.ª época."
+    if coverage >= 0.7:
+        return "continua", detail + (" Vai lá a turma quase toda: parece o 2.º teste "
+                                     "da mesma época.")
+    if failed_share >= 0.5:
+        return "recurso", detail + " A maioria tinha chumbado: parece 2.ª época."
+    return "continua", detail + " Os dados não são conclusivos."
+
+
+def _block_final(block: dict):
+    """A coluna de nota final do bloco, ou a ultima coluna de notas."""
+    finals = [c for c in block["columns"] if c.kind == KIND_FINAL]
+    if finals:
+        return finals[-1]
+    return block["columns"][-1] if block["columns"] else None
+
+
+def _cell(row: list, index: int) -> str:
+    return row[index] if index < len(row) else ""
 
 
 def _final_priority(header: str) -> int:
@@ -425,7 +629,12 @@ def _final_priority(header: str) -> int:
 
 
 def _pick_final_columns(columns: list) -> None:
-    """Uma nota final por epoca; as outras candidatas passam a componentes."""
+    """Escolhe as notas finais: uma por via de avaliacao de cada epoca.
+
+    Uma epoca pode ter mais do que uma nota final quando ha vias alternativas
+    (avaliacao continua ou exame). O aluno so faz uma; a nota da epoca e a que
+    ele tiver.
+    """
     by_epoca: dict = {}
     for column in columns:
         if column.role == ROLE_GRADE:
@@ -436,15 +645,13 @@ def _pick_final_columns(columns: list) -> None:
     )
 
     for epoca, group in by_epoca.items():
-        if any(c.locked for c in group):
-            # O utilizador já decidiu este bloco: mexer nele desfazia a escolha.
-            continue
         if epoca is None and has_epoca_final:
             # Colunas fora de qualquer bloco de epoca (ex.: "Projeto" antes de
             # "Teste 1") sao componentes partilhados, nunca a nota final.
             for column in group:
-                column.kind = KIND_COMPONENT
-                column.reason = "componente comum a todas as épocas"
+                if not column.locked:
+                    column.kind = KIND_COMPONENT
+                    column.reason = "componente comum a todas as épocas"
             continue
 
         candidates = [c for c in group if c.kind == KIND_FINAL]
@@ -452,22 +659,42 @@ def _pick_final_columns(columns: list) -> None:
             # Sem candidata obvia: a ultima coluna do bloco costuma ser a nota
             # final. Prefere-se uma com numeros, mas um bloco so com "RE"/"NA"
             # tambem tem de dar uma nota. Fica com confianca baixa (gera pergunta).
-            numeric = [c for c in group if c.numeric_ratio > 0.3] or group
-            if numeric:
-                chosen = numeric[-1]
+            livres = [c for c in group if not c.locked]
+            fallback = [c for c in livres if c.numeric_ratio > 0.3] or livres
+            if fallback:
+                chosen = fallback[-1]
                 chosen.kind = KIND_FINAL
                 chosen.confidence = min(chosen.confidence, 0.35)
-                chosen.reason = "última coluna numérica do bloco (palpite)"
+                chosen.reason = "última coluna do bloco (palpite)"
             continue
-        best = max(candidates, key=lambda c: (_final_priority(c.header), c.index))
+
+        # Uma nota final por grupo de colunas com o mesmo preenchimento.
+        by_cluster: dict = {}
         for column in candidates:
-            if column is not best and not column.locked:
-                column.kind = KIND_COMPONENT
-                column.reason = f"«{best.header}» foi escolhida como nota final"
-        best.kind = KIND_FINAL
-        if len(candidates) > 1:
-            # Havia mais do que uma hipotese: convem confirmar.
-            best.confidence = min(best.confidence, 0.55)
+            by_cluster.setdefault(column.cluster, []).append(column)
+
+        for cluster in by_cluster.values():
+            fixadas = [c for c in cluster if c.locked]
+            best = (fixadas[-1] if fixadas
+                    else max(cluster, key=lambda c: (_final_priority(c.header), c.index)))
+            for column in cluster:
+                if column is not best and not column.locked:
+                    column.kind = KIND_COMPONENT
+                    column.reason = f"«{best.header}» foi escolhida como nota final"
+            best.kind = KIND_FINAL
+            if len(cluster) > 1 and not fixadas:
+                # So se pergunta quando as candidatas estao renhidas. Entre
+                # "Nota Final" e "Avaliação Final" ha duvida legitima; entre
+                # "Nota Final" e "Nota Trabalho" nao ha nenhuma.
+                rivals = sorted((_final_priority(c.header) for c in cluster), reverse=True)
+                if rivals[0] - rivals[1] < 20:
+                    best.confidence = min(best.confidence, 0.55)
+
+        if len(by_cluster) > 1:
+            for cluster in by_cluster.values():
+                for column in cluster:
+                    if column.kind == KIND_FINAL:
+                        column.reason += " (via alternativa desta época)"
 
 
 # --------------------------------------------------------------------------
@@ -706,6 +933,9 @@ def build_questions(sources: list) -> list:
                     default=str(column.index),
                 ))
 
+        for question in _moment_questions(source, grade_columns):
+            questions.append(question)
+
         unknown_epoca = [c for c in grade_columns if c.epoca is None and c.kind == KIND_FINAL]
         if unknown_epoca:
             questions.append(Question(
@@ -749,8 +979,51 @@ def build_questions(sources: list) -> list:
 
 
 def _epoca_label(epoca: Optional[str]) -> str:
-    from .models import EPOCA_LABELS
     return EPOCA_LABELS.get(epoca or "", "época desconhecida")
+
+
+def _moment_questions(source: Source, grade_columns: list) -> list:
+    """Pergunta o que e um segundo momento de avaliacao.
+
+    E a pergunta mais importante da aplicacao: "Teste 2" tanto pode ser o
+    segundo teste da avaliacao continua -- que se faz no dia do exame de 1.a
+    epoca, e portanto conta para essa epoca -- como o exame de 2.a epoca. Os
+    dados dao um palpite; quem sabe a cadeira e que confirma.
+    """
+    moments: dict = {}
+    for column in grade_columns:
+        if column.moment and column.moment > 1:
+            moments.setdefault(column.moment, []).append(column)
+
+    questions = []
+    for moment, group in sorted(moments.items()):
+        earlier = [c for c in grade_columns if (c.moment or 1) < moment and c.epoca]
+        previous = earlier[-1].epoca if earlier else EPOCA_1
+        headers = ", ".join(f"«{c.header}»" for c in group)
+
+        options = [{
+            "value": previous,
+            "label": f"Continuação da {EPOCA_LABELS[previous]}",
+            "hint": "2.º teste/frequência — é no mesmo dia do exame",
+        }]
+        for epoca in (EPOCA_2, EPOCA_ESP):
+            if epoca != previous:
+                options.append({"value": epoca, "label": EPOCA_LABELS[epoca],
+                                "hint": "é sempre por exame"})
+
+        questions.append(Question(
+            id=f"{source.id}:moment:{moment}",
+            type="moment",
+            source_id=source.id,
+            title=f"Em «{source.label}», {headers} é um segundo momento de avaliação. "
+                  "Conta para a mesma época ou é outra?",
+            detail=(group[0].evidence or "") +
+                   " Um 2.º teste conta para a 1.ª época; um exame de recurso é 2.ª época.",
+            options=options,
+            default=group[0].epoca or previous,
+            severity="warning",
+        ))
+    return questions
 
 
 def apply_answers(sources: list, answers: dict) -> None:
@@ -779,6 +1052,18 @@ def apply_answers(sources: list, answers: dict) -> None:
                     column.reason = "época definida pelo utilizador"
                 column.confidence = 1.0
                 column.locked = True
+        elif kind == "moment":
+            try:
+                moment = int(parts[2])
+            except (TypeError, ValueError, IndexError):
+                continue
+            for column in source.columns:
+                if column.role == ROLE_GRADE and column.moment == moment:
+                    column.epoca = value
+                    column.route = (ROUTE_EXAME if value in (EPOCA_2, EPOCA_ESP)
+                                    else ROUTE_CONTINUA)
+                    column.confidence = 1.0
+                    column.reason = "momento definido pelo utilizador"
         elif kind == "final":
             try:
                 chosen_index = int(value)

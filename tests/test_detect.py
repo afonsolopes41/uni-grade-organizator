@@ -53,7 +53,7 @@ def test_papeis_basicos():
 
 
 def test_coluna_so_com_estados_conta_como_nota():
-    """Uma 2.ª época onde quase ninguém foi está cheia de "-" e continua a ser nota."""
+    """Uma época onde quase ninguém foi está cheia de "-" e continua a ser nota."""
     src = source([
         ["Nome", "Teste 2", "Nota Final 2"],
         ["Ana Maria Silva", "-", "-"],
@@ -63,7 +63,9 @@ def test_coluna_so_com_estados_conta_como_nota():
     ])
     assert column(src, "Teste 2").role == "grade"
     assert column(src, "Nota Final 2").role == "grade"
-    assert column(src, "Nota Final 2").epoca == EPOCA_2
+    assert column(src, "Nota Final 2").kind == KIND_FINAL
+    # Sem um momento anterior no ficheiro não dá para saber que época é: pergunta-se.
+    assert any(q.type == "moment" for q in build_questions([src]))
 
 
 def test_coluna_vazia_e_ignorada():
@@ -91,13 +93,26 @@ def test_sem_cabecalho_util_ainda_encontra_o_nome():
     ("Época de recurso", EPOCA_2, "strong"),
     ("Época Especial", EPOCA_ESP, "strong"),
     ("1E", EPOCA_1, "strong"),
-    ("Teste 2", EPOCA_2, "weak"),
-    ("Nota Final 2", EPOCA_2, "weak"),
+    ("Teste 1", EPOCA_1, "weak"),        # o 1.º teste só existe na 1.ª época
     ("Avaliação Final", None, None),
-    ("Ex 2", None, None),          # exercício 2, não 2.ª época
+    ("Ex 2", None, None),
+    # Um "2" no cabeçalho não diz a época: o 2.º teste é no dia do exame de
+    # 1.ª época, mas o mesmo rótulo também aparece em pautas de recurso.
+    ("Teste 2", None, None),
+    ("Nota Final 2", None, None),
 ])
 def test_epoca_from_text(text, epoca, strength):
     assert epoca_from_text(text) == (epoca, strength)
+
+
+@pytest.mark.parametrize("text,moment", [
+    ("Teste 2", 2), ("Nota Final 2", 2), ("Avaliação Final 2", 2), ("Exame 2", 2),
+    ("Teste 3", 3), ("Ex 2", None), ("Ex 4b", None), ("Teste 1", None),
+    ("Nota Final", None), ("Q2", None),
+])
+def test_moment_index(text, moment):
+    from gradeorg.detect import moment_index
+    assert moment_index(text) == moment
 
 
 def test_blocos_de_epoca_num_pdf_com_duas_epocas():
