@@ -726,9 +726,15 @@ def consolidate(sources: list, settings: Optional[Settings] = None) -> dict:
                 "approved": _approved(best, settings, subject),
             }
 
+        # Cadeiras em que o aluno aparece, mesmo sem nota nenhuma: e o que
+        # separa "foi à cadeira e ficou sem nota" de "nem sequer a fez".
+        inscrito = sorted({subject_names.get(r.source_id) for r in cluster
+                           if subject_names.get(r.source_id)}, key=_sort_key)
+
         averages = _student_averages(subjects, settings, semestres)
         averages.update(_plan_coverage(subjects, known_subjects, courses))
         students.append({
+            "seen_subjects": inscrito,
             "averages": averages,
             "key": _student_key(student_id, name),
             "name": name or (f"(sem nome) {student_id}" if student_id else "(sem nome)"),
@@ -790,6 +796,7 @@ def consolidate(sources: list, settings: Optional[Settings] = None) -> dict:
         "removed_subjects": sorted(settings.removed_subjects),
         "merged_subjects": merged_subjects,
         "stats": _stats(students, subject_list, settings),
+        "subject_stats": _subject_stats(students, subject_list, settings),
     }
 
 
@@ -950,6 +957,49 @@ def _sort_key(text: str) -> str:
     return strip_accents((text or "").lower())
 
 
+def _subject_stats(students: list, subjects: list, settings: Settings) -> dict:
+    """Aprovações, reprovações e média de cada cadeira.
+
+    Somadas entre cadeiras estas contas não querem dizer nada -- 40 aprovações
+    em quatro UCs não é uma leitura de nada. Por cadeira já são a leitura certa:
+    quantos passaram, quantos chumbaram e com que média.
+
+    Só contam os alunos que têm essa cadeira: quem é de outro curso não conta
+    como reprovado numa cadeira que nunca fez.
+    """
+    resultado: dict = {}
+    for subject in subjects:
+        aprovados = reprovados = pendentes = 0
+        valores: list = []
+        for student in students:
+            data = student["subjects"].get(subject)
+            if not data:
+                # Aparece na pauta mas sem nota nenhuma.
+                if subject in student.get("seen_subjects", ()):
+                    pendentes += 1
+                continue
+            if data["approved"] is True:
+                aprovados += 1
+            elif data["approved"] is False:
+                reprovados += 1
+            else:
+                pendentes += 1
+            grade = data["best"]
+            if grade is not None and grade.value is not None:
+                valores.append(final_value(grade, settings.scale))
+
+        avaliados = aprovados + reprovados
+        resultado[subject] = {
+            "students": aprovados + reprovados + pendentes,
+            "approved": aprovados,
+            "failed": reprovados,
+            "pending": pendentes,
+            "average": round(sum(valores) / len(valores), 2) if valores else None,
+            "pass_rate": round(aprovados / avaliados, 3) if avaliados else None,
+        }
+    return resultado
+
+
 def _stats(students: list, subjects: list, settings: Settings) -> dict:
     approved = failed = pending = 0
     values = []
@@ -1040,6 +1090,7 @@ def to_json(result: dict, lang: str = DEFAULT_LANGUAGE) -> dict:
         "curriculum": result.get("curriculum", {}),
         "courses": result.get("courses", {}),
         "subject_groups": result.get("subject_groups", []),
+        "subject_stats": result.get("subject_stats", {}),
         "subject_files": result.get("subject_files", {}),
         "removed_subjects": result.get("removed_subjects", []),
         "merged_subjects": result.get("merged_subjects", []),

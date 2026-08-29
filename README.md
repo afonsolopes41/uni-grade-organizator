@@ -331,6 +331,35 @@ os acentos onde devem estar: «Álgebra» antes de «Análise»). As que ainda n
 ano nem semestre ficam num grupo à parte, no fim. O Excel segue a mesma ordem e
 escreve o ano e o semestre por baixo do nome de cada UC no Resumo.
 
+## As contas que interessam são por cadeira
+
+Aprovações e reprovações **somadas entre cadeiras** não são a leitura de nada:
+40 aprovações em quatro UCs não diz quantas pessoas passaram a quê. Por isso em
+cima da listagem ficam só os números que valem somados — alunos, unidades
+curriculares, notas registadas e a média de todas —, e o resto vive num **cartão
+por UC**:
+
+```
+1.º ANO · 1.º SEM.                    2.º ANO · 1.º SEM.
+┌────────────────────────────┐        ┌────────────────────────────┐
+│ Segurança e Gestão de Redes│        │ Álgebra Linear             │
+│ 12,85  ▄▄▄▄▄▄▄▄▄▟▙   46/65 │        │ 15,43  ▄▄▄▄▄▄▄▄▄▄▄▄  56/56 │
+└────────────────────────────┘        └────────────────────────────┘
+```
+
+Cada cartão traz a **média da cadeira**, uma barra com a proporção de aprovados
+(verde), reprovados (vermelho) e sem nota (cinzento), e a contagem. A dica do
+rato abre os números por extenso. Os cartões estão agrupados por ano e semestre,
+como as colunas da tabela.
+
+E são o próprio **filtro**: um clique esconde a coluna dessa UC da tabela, outro
+traz-a de volta. É por isso que a informação por cadeira não custa uma única
+linha a mais na página — ocupa o lugar que os filtros já ocupavam.
+
+No Excel, o Resumo ganha as mesmas duas linhas por baixo de cada coluna de UC —
+**Média da UC** e **Aprovados** (`46/65`) — em fórmula, e seguindo a nota mínima
+dessa cadeira.
+
 ## Nota mínima por cadeira
 
 A nota mínima para passar **depende de cada cadeira**. Na página há um campo por
@@ -400,7 +429,7 @@ gradeorg/
   app.py           API JSON + página
   server.py        arranque e abertura do navegador
   web/             index.html · style.css · app.js · i18n.js
-tests/             300 testes
+tests/             305 testes
 ```
 
 ## Testes

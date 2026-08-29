@@ -214,3 +214,21 @@ def test_resumo_diz_o_ano_e_o_semestre_no_cabecalho_da_uc(tmp_path):
     cabecalhos = [c.value for row in resumo.iter_rows(min_row=1, max_row=12)
                   for c in row if isinstance(c.value, str) and "Análise" in c.value]
     assert any("2.º ano · 1.º sem." in c for c in cabecalhos)
+
+
+def test_resumo_tem_a_media_e_os_aprovados_de_cada_uc(workbook):
+    """Por baixo da coluna de cada UC, duas linhas em fórmula."""
+    resumo = workbook["Resumo"]
+    cabecalho = resumo_header_row(resumo)
+    ultima = cabecalho + 3                      # três alunos na pauta de teste
+
+    rotulos = [resumo.cell(row=ultima + 1, column=2).value,
+               resumo.cell(row=ultima + 2, column=2).value]
+    assert rotulos == ["Média da UC", "Aprovados"]
+
+    media = resumo.cell(row=ultima + 1, column=3).value
+    assert media == f'=IFERROR(ROUND(AVERAGE(C{cabecalho + 1}:C{ultima}),2),"—")'
+
+    aprovados = resumo.cell(row=ultima + 2, column=3).value
+    assert aprovados.startswith(f'=COUNTIF(C{cabecalho + 1}:C{ultima},">="&')
+    assert aprovados.endswith(f'&"/"&COUNT(C{cabecalho + 1}:C{ultima})')
