@@ -187,7 +187,7 @@ def test_duas_representacoes_da_mesma_nota_nao_sao_vias():
 # -- nota mínima por cadeira ----------------------------------------------
 
 def test_nota_minima_e_por_cadeira():
-    a = source([["Nome", "Nota Final"], ["Ana Maria Silva", "9,7"]],
+    a = source([["Nome", "Nota Final"], ["Ana Maria Silva", "9,4"]],
                titulo="Análise Matemática - Pauta")
     b = build_source("s2", "b.pdf", "pdf", RawTable(
         rows=[["Nome", "Nota Final"], ["Ana Maria Silva", "9,7"]],
@@ -249,3 +249,35 @@ def test_a_via_de_cada_epoca_vai_no_resultado():
     rui = next(s for s in data["students"] if s["name"] == "Rui Costa Lopes")
     epocas = rui["subjects"]["Análise Matemática"]["epocas"]
     assert epocas[EPOCA_2]["route_label"] == "Exame"
+
+
+# -- a coluna do exame como via alternativa --------------------------------
+
+def test_coluna_de_exame_so_para_quem_nao_tem_nota_final_e_uma_via():
+    """«Exame» preenchido só para quem tem a «Nota final» vazia: é a outra via.
+
+    Sem isto, quem foi a exame ficava sem nota nenhuma — a coluna contava como
+    componente e não entrava no resultado.
+    """
+    src = source([["Nome", "Teste intercalar", "2º teste", "Labs", "Nota final", "Exame"],
+                  ["Ana Maria Silva", "10,25", "13,80", "14,90", "13,0", ""],
+                  ["Rui Costa Lopes", "", "", "", "", "5,9"],
+                  ["Ines Santos Dias", "13,50", "11,47", "17,00", "14,1", ""],
+                  ["Joao Pedro Nunes", "", "", "", "", "16,0"]])
+    finais = {c.header: c.route for c in src.columns if c.is_final}
+    assert finais == {"Nota final": ROUTE_CONTINUA, "Exame": ROUTE_EXAME}
+
+    alunos = {a["name"]: a for a in consolidate([src])["students"]}
+    uc = "Análise Matemática"
+    assert alunos["Rui Costa Lopes"]["subjects"][uc]["best"].label == "5,9"
+    assert alunos["Joao Pedro Nunes"]["subjects"][uc]["best"].label == "16"
+    assert alunos["Ana Maria Silva"]["subjects"][uc]["best"].label == "13"
+
+
+def test_exame_que_toda_a_gente_tem_continua_a_ser_componente():
+    """Ao lado de uma «Nota Final» que toda a gente tem, o exame é um componente."""
+    src = source([["Nome", "Nota Trabalho", "Exame 1", "Nota Final"],
+                  ["Ana Maria Silva", "19", "13,5", "16"],
+                  ["Rui Costa Lopes", "9", "16", "16"],
+                  ["Ines Santos Dias", "18", "14", "16"]])
+    assert [c.header for c in src.columns if c.is_final] == ["Nota Final"]

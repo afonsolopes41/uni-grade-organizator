@@ -2,6 +2,10 @@
 
 Fluxo: parsers -> RawTable -> detect -> Source(+Column) -> consolidate ->
 StudentRecord -> excel/web.
+
+Os textos que chegam ao utilizador (razoes, notas, perguntas) sao objectos
+:class:`~gradeorg.i18n.Msg`, para poderem sair em portugues ou em ingles. E por
+isso que os ``to_dict`` recebem a lingua.
 """
 
 from __future__ import annotations
@@ -9,17 +13,16 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from .i18n import DEFAULT_LANGUAGE, location_label, render, tr
+
 # Chaves internas das epocas. A ordem importa (1 -> 2 -> especial).
 EPOCA_1 = "epoca1"
 EPOCA_2 = "epoca2"
 EPOCA_ESP = "especial"
 EPOCAS = [EPOCA_1, EPOCA_2, EPOCA_ESP]
 
-EPOCA_LABELS = {
-    EPOCA_1: "1.ª Época",
-    EPOCA_2: "2.ª Época",
-    EPOCA_ESP: "Época Especial",
-}
+#: Etiquetas em portugues -- para ingles usa-se ``i18n.epoca_label``.
+EPOCA_LABELS = {epoca: tr(f"epoca.{epoca}") for epoca in EPOCAS}
 
 ROLE_NAME = "name"
 ROLE_ID = "id"
@@ -35,10 +38,7 @@ KIND_COMPONENT = "component"
 ROUTE_CONTINUA = "continua"
 ROUTE_EXAME = "exame"
 
-ROUTE_LABELS = {
-    ROUTE_CONTINUA: "Avaliação contínua",
-    ROUTE_EXAME: "Exame",
-}
+ROUTE_LABELS = {route: tr(f"route.{route}") for route in (ROUTE_CONTINUA, ROUTE_EXAME)}
 
 
 @dataclass
@@ -51,6 +51,23 @@ class RawTable:
     footer_lines: list = field(default_factory=list)  # texto abaixo da tabela
     sheet_name: str = ""
     page: Optional[int] = None
+
+    def to_dict(self) -> dict:
+        return {"rows": self.rows, "location": self.location,
+                "title_lines": self.title_lines, "footer_lines": self.footer_lines,
+                "sheet_name": self.sheet_name, "page": self.page}
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "RawTable":
+        data = data or {}
+        return cls(
+            rows=[list(row) for row in (data.get("rows") or [])],
+            location=data.get("location") or "",
+            title_lines=list(data.get("title_lines") or []),
+            footer_lines=list(data.get("footer_lines") or []),
+            sheet_name=data.get("sheet_name") or "",
+            page=data.get("page"),
+        )
 
 
 @dataclass
@@ -70,18 +87,24 @@ class Column:
     #: preenchidas para os mesmos alunos sao a mesma nota, nao alternativas.
     cluster: int = 0
     #: O que os dados dizem sobre um momento posterior (texto para a pergunta).
-    evidence: str = ""
+    evidence: Any = ""
     scale: float = 20.0
     confidence: float = 0.0
-    reason: str = ""
+    reason: Any = ""
     numeric_ratio: float = 0.0
     filled_ratio: float = 0.0
     max_value: Optional[float] = None
     samples: list = field(default_factory=list)
     #: Definida pelo utilizador -- a detecção automática não lhe volta a tocar.
     locked: bool = False
+    #: A coluna traz o numero e o nome juntos ("122631 Ana Silva").
+    combined: bool = False
 
-    def to_dict(self) -> dict:
+    @property
+    def is_final(self) -> bool:
+        return self.role == ROLE_GRADE and self.kind == KIND_FINAL
+
+    def to_dict(self, lang: str = DEFAULT_LANGUAGE) -> dict:
         return {
             "index": self.index,
             "header": self.header,
@@ -91,14 +114,15 @@ class Column:
             "route": self.route,
             "moment": self.moment,
             "cluster": self.cluster,
-            "evidence": self.evidence,
+            "evidence": render(self.evidence, lang),
             "scale": self.scale,
             "confidence": round(self.confidence, 2),
-            "reason": self.reason,
+            "reason": render(self.reason, lang),
             "numeric_ratio": round(self.numeric_ratio, 2),
             "filled_ratio": round(self.filled_ratio, 2),
             "max_value": self.max_value,
             "locked": self.locked,
+            "combined": self.combined,
             "samples": self.samples[:5],
         }
 
@@ -109,10 +133,11 @@ class Guess:
 
     value: Optional[str] = None
     confidence: float = 0.0
-    reason: str = ""
+    reason: Any = ""
 
-    def to_dict(self) -> dict:
-        return {"value": self.value, "confidence": round(self.confidence, 2), "reason": self.reason}
+    def to_dict(self, lang: str = DEFAULT_LANGUAGE) -> dict:
+        return {"value": self.value, "confidence": round(self.confidence, 2),
+                "reason": render(self.reason, lang)}
 
 
 @dataclass
@@ -142,30 +167,38 @@ class Source:
 
     @property
     def label(self) -> str:
-        return f"{self.filename} ({self.location})" if self.location else self.filename
+        return self.label_in()
+
+    def label_in(self, lang: str = DEFAULT_LANGUAGE) -> str:
+        """«pauta.pdf (página 2)» -- o sítio exacto de onde a tabela saiu."""
+        place = location_label(self.location, lang)
+        return f"{self.filename} ({place})" if place else self.filename
 
     def grade_columns(self) -> list:
         return [c for c in self.columns if c.role == ROLE_GRADE]
 
-    def to_dict(self) -> dict:
+    def final_columns(self) -> list:
+        return [c for c in self.columns if c.is_final]
+
+    def to_dict(self, lang: str = DEFAULT_LANGUAGE) -> dict:
         return {
             "id": self.id,
             "filename": self.filename,
             "kind": self.kind,
-            "location": self.location,
-            "label": self.label,
-            "subject": self.subject.to_dict(),
-            "subject_code": self.subject_code.to_dict(),
-            "semester": self.semester.to_dict(),
-            "academic_year": self.academic_year.to_dict(),
+            "location": location_label(self.location, lang),
+            "label": self.label_in(lang),
+            "subject": self.subject.to_dict(lang),
+            "subject_code": self.subject_code.to_dict(lang),
+            "semester": self.semester.to_dict(lang),
+            "academic_year": self.academic_year.to_dict(lang),
             "document_date": self.document_date,
-            "columns": [c.to_dict() for c in self.columns],
+            "columns": [c.to_dict(lang) for c in self.columns],
             "component_label": self.component_label,
             "component_weight": self.component_weight,
             "row_count": len(self.data_rows),
             "header_row": self.header_row,
             "preview": self.data_rows[:6],
-            "notes": self.notes,
+            "notes": [render(n, lang) for n in self.notes],
         }
 
 
@@ -176,22 +209,23 @@ class Question:
     id: str
     type: str                    # subject | epoca | final_column | scale | merge
     source_id: Optional[str]
-    title: str
-    detail: str = ""
+    title: Any
+    detail: Any = ""
     options: list = field(default_factory=list)   # [{"value","label","hint"}]
     default: Optional[str] = None
     allow_custom: bool = False
     severity: str = "info"       # info | warning
     column_index: Optional[int] = None
 
-    def to_dict(self) -> dict:
+    def to_dict(self, lang: str = DEFAULT_LANGUAGE) -> dict:
         return {
             "id": self.id,
             "type": self.type,
             "source_id": self.source_id,
-            "title": self.title,
-            "detail": self.detail,
-            "options": self.options,
+            "title": render(self.title, lang),
+            "detail": render(self.detail, lang),
+            "options": [{k: render(v, lang) for k, v in option.items()}
+                        for option in self.options],
             "default": self.default,
             "allow_custom": self.allow_custom,
             "severity": self.severity,
@@ -212,7 +246,6 @@ class GradeEntry:
     route: Optional[str] = None
     document_date: Optional[str] = None
     file_order: int = 0
-    components: dict = field(default_factory=dict)   # {"Projeto": Grade, ...}
 
 
 @dataclass

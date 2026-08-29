@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="pt">
+<html lang="pt-PT">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -11,29 +11,49 @@
 
 <header class="topbar">
   <div class="brand">
-    <span class="brand-mark">🎓</span>
-    <div>
-      <h1>Organizador de Notas</h1>
-      <p>Junta pautas em PDF, Excel ou texto e fica com a melhor nota de cada aluno.</p>
+    <span class="brand-mark" aria-hidden="true">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor"
+           stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 8.5 12 4l9 4.5-9 4.5-9-4.5Z"/>
+        <path d="M7 11v4.2c0 .8 2.2 2.3 5 2.3s5-1.5 5-2.3V11"/>
+        <path d="M21 8.5V14"/>
+      </svg>
+    </span>
+    <div class="brand-text">
+      <h1 data-i18n="app.title">Organizador de Notas</h1>
+      <p data-i18n="app.tagline"></p>
     </div>
   </div>
-  <nav class="steps" id="steps">
-    <button class="step is-active" data-step="upload"><b>1</b> Ficheiros</button>
-    <button class="step" data-step="review"><b>2</b> Confirmar</button>
-    <button class="step" data-step="results"><b>3</b> Resultados</button>
-  </nav>
+
+  <div class="topbar-right">
+    <nav class="steps" id="steps" aria-label="Passos">
+      <button class="step is-active" data-step="upload"><b>1</b><span data-i18n="step.files"></span></button>
+      <button class="step" data-step="review"><b>2</b><span data-i18n="step.review"></span></button>
+      <button class="step" data-step="results"><b>3</b><span data-i18n="step.results"></span></button>
+    </nav>
+    <div class="lang" id="lang" role="group" aria-label="Idioma">
+      <button data-lang="pt" class="is-on">PT</button>
+      <button data-lang="en">EN</button>
+    </div>
+  </div>
 </header>
 
 <main>
 
 <!-- ------------------------------------------------------------------ -->
 <section class="panel" id="panel-upload">
-  <div class="dropzone" id="dropzone" tabindex="0" role="button"
-       aria-label="Carregar ficheiros de notas">
-    <div class="dropzone-icon">📄</div>
-    <h2>Arraste as pautas para aqui</h2>
-    <p>ou <button type="button" class="link" id="pick">escolha os ficheiros</button></p>
-    <p class="hint">PDF · XLSX · CSV · TXT — pode misturar formatos e épocas diferentes</p>
+  <div class="dropzone" id="dropzone" tabindex="0" role="button" data-i18n-label="drop.aria">
+    <div class="dropzone-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor"
+           stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/>
+        <path d="M14 3v5h5"/><path d="M12 18v-6"/><path d="m9.5 14.5 2.5-2.5 2.5 2.5"/>
+      </svg>
+    </div>
+    <h2 data-i18n="drop.title"></h2>
+    <p><span data-i18n="drop.or"></span>
+       <button type="button" class="link" id="pick" data-i18n="drop.pick"></button></p>
+    <p class="hint" data-i18n="drop.hint"></p>
     <input type="file" id="file-input" multiple hidden
            accept=".pdf,.xlsx,.xlsm,.xltx,.csv,.tsv,.txt">
   </div>
@@ -42,8 +62,9 @@
   <div id="upload-errors"></div>
 
   <div class="actions" id="upload-actions" hidden>
-    <button class="btn btn-ghost" id="btn-reset">Limpar tudo</button>
-    <button class="btn btn-primary" id="btn-to-review">Continuar →</button>
+    <button class="btn btn-danger" id="btn-reset" data-i18n="action.clear"></button>
+    <span class="memory-note" data-i18n="memory.note"></span>
+    <button class="btn btn-primary" id="btn-to-review"><span data-i18n="action.continue"></span> →</button>
   </div>
 </section>
 
@@ -54,25 +75,25 @@
 
   <details class="advanced" id="advanced">
     <summary>
-      <span>Ajustes avançados</span>
-      <small>o que foi detectado em cada ficheiro, coluna a coluna</small>
+      <span data-i18n="advanced.summary"></span>
+      <small data-i18n="advanced.hint"></small>
     </summary>
     <div class="settings-grid">
       <label>
-        <span>Nota mínima (por omissão)</span>
+        <span data-i18n="advanced.pass_mark"></span>
         <input type="number" id="pass-mark" min="0" max="20" step="0.5" value="9.5">
       </label>
       <label class="check">
         <input type="checkbox" id="merge-by-name" checked>
-        <span>Juntar alunos com o mesmo nome, mesmo que o número não bata certo</span>
+        <span data-i18n="advanced.merge_by_name"></span>
       </label>
     </div>
     <div id="sources"></div>
   </details>
 
   <div class="actions">
-    <button class="btn btn-ghost" id="btn-back-upload">← Ficheiros</button>
-    <button class="btn btn-primary" id="btn-to-results">Ver notas consolidadas →</button>
+    <button class="btn btn-ghost" id="btn-back-upload">← <span data-i18n="action.back_files"></span></button>
+    <button class="btn btn-primary" id="btn-to-results"><span data-i18n="action.results"></span> →</button>
   </div>
 </section>
 
@@ -80,24 +101,26 @@
 <section class="panel" id="panel-results" hidden>
   <div class="stats" id="stats"></div>
   <div id="pending-warning"></div>
-  <div id="pass-marks"></div>
 
   <div class="toolbar">
     <div class="search">
-      <input type="search" id="search" placeholder="Procurar aluno por nome ou número…"
-             autocomplete="off">
+      <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round" aria-hidden="true">
+        <circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>
+      </svg>
+      <input type="search" id="search" data-i18n-ph="results.search" autocomplete="off">
     </div>
-    <div class="filters" id="subject-filters"></div>
     <div class="toolbar-right">
       <label class="check compact">
         <input type="checkbox" id="only-selected">
-        <span>Só os seleccionados (<b id="selected-count">0</b>)</span>
+        <span><span data-i18n="results.only_selected"></span> (<b id="selected-count">0</b>)</span>
       </label>
-      <button class="btn btn-ghost btn-sm" id="btn-select-visible">Seleccionar visíveis</button>
-      <button class="btn btn-ghost btn-sm" id="btn-clear-selection">Limpar selecção</button>
-      <button class="btn btn-primary" id="btn-export">⬇ Descarregar Excel</button>
+      <button class="btn btn-ghost btn-sm" id="btn-select-visible" data-i18n="results.select_visible"></button>
+      <button class="btn btn-ghost btn-sm" id="btn-clear-selection" data-i18n="results.clear_selection"></button>
+      <button class="btn btn-primary" id="btn-export">↓ <span data-i18n="action.export"></span></button>
     </div>
   </div>
+  <div class="filters" id="subject-filters"></div>
 
   <div class="table-wrap">
     <table class="grades" id="grades-table">
@@ -105,21 +128,23 @@
       <tbody id="grades-body"></tbody>
     </table>
   </div>
-  <p class="empty" id="no-rows" hidden>Nenhum aluno corresponde ao filtro.</p>
+  <p class="empty" id="no-rows" hidden data-i18n="results.empty"></p>
 
+  <div id="pass-marks"></div>
   <div id="notices"></div>
 
   <div class="actions">
-    <button class="btn btn-ghost" id="btn-back-review">← Confirmar</button>
-    <button class="btn btn-ghost" id="btn-add-more">+ Juntar mais ficheiros</button>
+    <button class="btn btn-ghost" id="btn-back-review">← <span data-i18n="action.back_review"></span></button>
+    <button class="btn btn-ghost" id="btn-add-more">+ <span data-i18n="action.add_more"></span></button>
   </div>
 </section>
 
 </main>
 
 <div class="toast" id="toast" hidden></div>
-<div class="busy" id="busy" hidden><div class="spinner"></div><p id="busy-text">A ler…</p></div>
+<div class="busy" id="busy" hidden><div class="spinner"></div><p id="busy-text"></p></div>
 
+<script src="i18n.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

@@ -57,7 +57,7 @@ def parse_text(path: str) -> list:
 
     width = max(len(r) for r in rows)
     rows = [r + [""] * (width - len(r)) for r in rows]
-    return [RawTable(rows=rows, location="texto")]
+    return [RawTable(rows=rows, location="text")]
 
 
 def _pick_delimiter(lines: list):

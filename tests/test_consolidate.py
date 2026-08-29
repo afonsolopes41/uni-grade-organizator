@@ -78,12 +78,27 @@ def test_so_primeira_epoca():
 
 
 def test_nota_minima_configuravel():
-    src = make_source([["Nome", "Nota Final"], ["Ana Maria Silva", "9,6"]])
+    """A mínima compara-se com a nota final -- a arredondada, que é a que fica."""
+    src = make_source([["Nome", "Nota Final"], ["Ana Maria Silva", "9,4"]])
     assert student(consolidate([src]), "Ana Maria Silva")[
-        "subjects"]["Análise Matemática"]["approved"] is True
-    strict = consolidate([src], Settings(pass_mark=10))
-    assert student(strict, "Ana Maria Silva")[
         "subjects"]["Análise Matemática"]["approved"] is False
+    generosa = consolidate([src], Settings(pass_mark=9))
+    assert student(generosa, "Ana Maria Silva")[
+        "subjects"]["Análise Matemática"]["approved"] is True
+
+
+def test_a_nota_final_e_a_arredondada():
+    """13,4 fica 13; 13,5 fica 14. E é essa que aprova e entra nas médias."""
+    baixo = make_source([["Nome", "Nota Final"], ["Ana Maria Silva", "13,4"]])
+    cima = make_source([["Nome", "Nota Final"], ["Rui Costa Lopes", "13,5"]])
+    resultado = consolidate([baixo, cima])
+    assert student(resultado, "Ana Maria Silva")["subjects"][
+        "Análise Matemática"]["best"].value == 13.4
+    assert to_json(resultado)["students"][0]["subjects"][
+        "Análise Matemática"]["best_rounded"] == 13
+    rui = [s for s in to_json(resultado)["students"] if s["name"] == "Rui Costa Lopes"][0]
+    assert rui["subjects"]["Análise Matemática"]["best_rounded"] == 14
+    assert rui["averages"]["final"]["value"] == 14
 
 
 # -- identidade dos alunos -------------------------------------------------
@@ -166,5 +181,8 @@ def test_to_json_traz_tudo_o_que_a_pagina_precisa():
     assert uc["best"]["label"] == "15,5"
     assert uc["best_rounded"] == 16
     assert uc["best_epoca_label"] == "1.ª Época"
-    assert uc["epocas"][EPOCA_1]["components"]["Projeto"]["label"] == "17"
+    # So a nota final interessa: as colunas de componentes nao vao para o
+    # resultado, nem sequer como informacao lateral.
+    assert uc["epocas"][EPOCA_1]["column"] == "Nota Final"
+    assert "components" not in uc["epocas"][EPOCA_1]
     assert data["stats"]["students"] == 1

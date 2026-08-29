@@ -153,3 +153,92 @@ def test_retirar_uma_resposta_repoe_a_deteccao(client):
     client.post("/api/answers", json={"answers": {subject: ""}})
     restantes = client.get("/api/state").get_json()["questions"]
     assert [q["id"] for q in restantes] == [subject]
+
+
+# -- gerir cadeiras e língua pela API --------------------------------------
+
+def test_api_muda_o_nome_de_uma_cadeira(client):
+    upload(client, "pauta.csv", CSV_PSTE)
+    antes = client.get("/api/state").get_json()["subjects"][0]
+
+    resposta = client.post("/api/subjects", json={
+        "action": "rename", "subject": antes, "name": "Física Geral"})
+    assert resposta.status_code == 200
+    assert "Física Geral" in resposta.get_json()["subjects"]
+
+
+def test_api_apaga_e_repoe_uma_cadeira(client):
+    upload(client, "pauta.csv", CSV_PSTE)
+    upload(client, "algebra.csv", CSV_ALG)
+    subjects = client.get("/api/state").get_json()["subjects"]
+    alvo = subjects[0]
+
+    depois = client.post("/api/subjects", json={"action": "remove", "subject": alvo})
+    assert depois.get_json()["removed_subjects"] == [alvo]
+    assert alvo not in client.get("/api/results").get_json()["subjects"]
+
+    client.post("/api/subjects", json={"action": "restore", "subject": alvo})
+    assert alvo in client.get("/api/results").get_json()["subjects"]
+
+
+def test_api_recusa_uma_accao_desconhecida(client):
+    upload(client, "pauta.csv", CSV_PSTE)
+    assert client.post("/api/subjects", json={"action": "voar"}).status_code == 400
+
+
+def test_api_troca_de_lingua(client):
+    upload(client, "pauta.csv", CSV_PSTE)
+    resposta = client.post("/api/language", json={"language": "en"})
+    assert resposta.get_json()["language"] == "en"
+
+    resultados = client.get("/api/results").get_json()
+    assert [e["label"] for e in resultados["epocas"]][0] == "1st Season"
+
+    excel = client.post("/api/export", json={})
+    livro = openpyxl.load_workbook(io.BytesIO(excel.data))
+    assert "Summary" in livro.sheetnames
+
+
+def test_api_diz_de_que_ficheiros_vem_cada_cadeira(client):
+    upload(client, "pauta.csv", CSV_PSTE)
+    ficheiros = client.get("/api/state").get_json()["subject_files"]
+    assert [*ficheiros.values()][0] == ["pauta.csv"]
+
+
+def test_api_cria_uma_cadeira_e_aponta_lhe_um_ficheiro(client):
+    upload(client, "pauta.csv", CSV_PSTE)
+    criada = client.post("/api/subjects", json={"action": "create", "name": "Óptica"})
+    assert "Óptica" in criada.get_json()["subjects"]
+
+    apontada = client.post("/api/subjects", json={
+        "action": "assign", "file": "pauta.csv", "subject": "Óptica"})
+    assert apontada.get_json()["subject_files"]["Óptica"] == ["pauta.csv"]
+
+
+def test_api_abre_o_documento_de_uma_fonte(client):
+    upload(client, "pauta.csv", CSV_PSTE)
+    fonte = client.get("/api/state").get_json()["sources"][0]["id"]
+    resposta = client.get(f"/api/document/{fonte}")
+    assert resposta.status_code == 200
+    assert b"Ana Maria Silva" in resposta.data
+    assert client.get("/api/document/f99s0").status_code == 404
+
+
+def test_api_confirma_uma_pauta(client):
+    upload(client, "pauta.csv", CSV_PSTE)
+    fonte = client.get("/api/state").get_json()["sources"][0]["id"]
+    depois = client.post("/api/sources/confirm", json={"source_id": fonte})
+    assert depois.get_json()["confirmed_sources"] == [fonte]
+    voltou = client.post("/api/sources/confirm",
+                         json={"source_id": fonte, "confirmed": False})
+    assert voltou.get_json()["confirmed_sources"] == []
+
+
+def test_api_traz_as_notas_finais_arredondadas(client):
+    upload(client, "decimas.csv",
+           "Nome;Nº Aluno;Nota Final\nAna Maria Silva;112233;13,4\n"
+           "Rui Costa Lopes;112234;13,5\n".encode("utf-8"))
+    alunos = {a["name"]: a for a in client.get("/api/results").get_json()["students"]}
+    uc = next(iter(alunos["Ana Maria Silva"]["subjects"]))
+    assert alunos["Ana Maria Silva"]["subjects"][uc]["best_rounded"] == 13
+    assert alunos["Rui Costa Lopes"]["subjects"][uc]["best_rounded"] == 14

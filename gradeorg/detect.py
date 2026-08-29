@@ -11,11 +11,11 @@ import os
 import re
 from typing import Optional
 
+from .i18n import Msg
 from .models import (
     EPOCA_1,
     EPOCA_2,
     EPOCA_ESP,
-    EPOCA_LABELS,
     EPOCAS,
     KIND_COMPONENT,
     KIND_FINAL,
@@ -33,6 +33,7 @@ from .models import (
 )
 from .normalize import (
     clean_text,
+    looks_like_id_and_name,
     looks_like_person_name,
     norm_header,
     norm_text,
@@ -220,6 +221,7 @@ def _column_stats(values: list) -> dict:
     numbers = [n for n in numbers if n is not None]
     ids = [v for v in filled if parse_student_id(v)]
     names = [v for v in filled if looks_like_person_name(v)]
+    combined = [v for v in filled if looks_like_id_and_name(v)]
 
     # Celulas que sao nota mesmo sem serem numero: "RE", "NA", "-", ...
     statuses, dashes = 0, 0
@@ -242,6 +244,7 @@ def _column_stats(values: list) -> dict:
         "gradeish_ratio": (len(numbers) + statuses + dashes) / denom,
         "id_ratio": len(ids) / denom,
         "name_ratio": len(names) / denom,
+        "combined_ratio": len(combined) / denom,
         "max_value": max(numbers) if numbers else None,
         "min_value": min(numbers) if numbers else None,
         "distinct": len({clean_text(v) for v in filled}),
@@ -281,9 +284,50 @@ def classify_columns(header_row: list, data_rows: list, file_epoca: Optional[str
 
     _pick_name_and_id(columns, data_rows)
     _assign_epocas(columns, file_epoca, data_rows)
+    _promote_exam_routes(columns, data_rows)
     _compute_clusters(columns, data_rows)
     _pick_final_columns(columns)
     return columns
+
+
+def _promote_exam_routes(columns: list, data_rows: list) -> None:
+    """Uma coluna «Exame» preenchida só para quem não tem nota final é uma via.
+
+    Em muitas cadeiras a nota vem da avaliação contínua *ou* do exame: quem foi
+    a exame tem a coluna «Nota final» vazia e a do exame preenchida. Sem isto
+    esses alunos ficavam sem nota nenhuma, porque «Exame» conta como componente.
+
+    O sinal não é o cabeçalho — é o preenchimento. Um «Exame 1» que toda a gente
+    tem, ao lado de uma «Nota Final» que toda a gente também tem, continua a ser
+    um componente dela.
+    """
+    finais = [c for c in columns if c.is_final]
+    if not finais or not data_rows:
+        return
+
+    for column in columns:
+        if column.role != ROLE_GRADE or column.kind == KIND_FINAL or column.locked:
+            continue
+        if not _has_word(norm_header(column.header), _EXAM_WORDS):
+            continue
+        pares = [c for c in finais if c.epoca == column.epoca]
+        if not pares:
+            continue
+
+        proprios = exclusivos = 0
+        for row in data_rows:
+            if parse_grade(_cell(row, column.index), scale=column.scale).is_empty:
+                continue
+            proprios += 1
+            if all(parse_grade(_cell(row, c.index), scale=c.scale).is_empty
+                   for c in pares):
+                exclusivos += 1
+
+        if proprios >= 2 and exclusivos >= proprios * 0.9:
+            column.kind = KIND_FINAL
+            column.route = ROUTE_EXAME
+            column.confidence = max(column.confidence, 0.7)
+            column.reason = Msg("reason.exam_route")
 
 
 def _compute_clusters(columns: list, data_rows: list) -> None:
@@ -332,45 +376,55 @@ def _classify_one(column: Column, header: str, stats: dict) -> Column:
     """Papel de uma coluna, a partir do cabecalho e da forma dos dados."""
     if stats["filled"] == 0:
         column.role = ROLE_IGNORE
-        column.reason = "coluna vazia"
+        column.reason = Msg("reason.empty_column")
         column.confidence = 0.9
         return column
 
     if _has_word(header, IGNORE_WORDS):
         column.role = ROLE_IGNORE
-        column.reason = f"cabeçalho «{column.header}» não é uma nota"
+        column.reason = Msg("reason.header_not_grade", header=column.header)
         column.confidence = 0.7
+        return column
+
+    # Antes de tudo o resto: ha pautas que poem o numero e o nome na mesma
+    # coluna. Se passasse pelo teste do numero, "122631 Ana Silva" virava a
+    # coluna do numero e o nome desaparecia.
+    if stats["combined_ratio"] >= 0.6:
+        column.role = ROLE_NAME
+        column.combined = True
+        column.confidence = 0.9
+        column.reason = Msg("reason.id_and_name")
         return column
 
     if _has_word(header, NAME_WORDS) and stats["numeric_ratio"] < 0.5:
         column.role = ROLE_NAME
         column.confidence = 0.95
-        column.reason = "cabeçalho indica nome"
+        column.reason = Msg("reason.header_name")
         return column
 
     if _has_word(header, ID_WORDS) and stats["id_ratio"] > 0.5:
         column.role = ROLE_ID
         column.confidence = 0.95
-        column.reason = "cabeçalho indica número de aluno"
+        column.reason = Msg("reason.header_id")
         return column
 
     if stats["name_ratio"] >= 0.7:
         column.role = ROLE_NAME
         column.confidence = 0.8
-        column.reason = "os valores parecem nomes de pessoas"
+        column.reason = Msg("reason.values_names")
         return column
 
     if stats["id_ratio"] >= 0.8 and stats["distinct"] >= max(2, stats["filled"] - 2):
         column.role = ROLE_ID
         column.confidence = 0.8
-        column.reason = "os valores parecem números de aluno"
+        column.reason = Msg("reason.values_ids")
         return column
 
     if stats["numeric_ratio"] >= 0.4 or _looks_like_grade_column(column, stats):
         pass
     else:
         column.role = ROLE_IGNORE
-        column.reason = "não parece nome, número nem nota"
+        column.reason = Msg("reason.not_recognised")
         column.confidence = 0.4
         return column
 
@@ -384,21 +438,21 @@ def _classify_one(column: Column, header: str, stats: dict) -> Column:
             # dessa epoca, nao um componente dela.
             column.kind = KIND_FINAL
             column.confidence = 0.75
-            column.reason = f"«{column.header}» é a nota da época"
+            column.reason = Msg("reason.epoca_grade", header=column.header)
         elif matched_final:
             # "Nota Exame" e a nota da via de exame; "Nota Trabalho" tambem entra
             # como candidata, mas perde para "Nota Final" na escolha seguinte.
             column.kind = KIND_FINAL
             column.confidence = 0.8 if not matched_comp else 0.55
-            column.reason = f"cabeçalho «{column.header}» indica nota final"
+            column.reason = Msg("reason.header_final", header=column.header)
         else:
             column.kind = KIND_COMPONENT
             column.confidence = 0.6 if matched_comp else 0.4
-            column.reason = f"cabeçalho «{column.header}» indica componente"
+            column.reason = Msg("reason.header_component", header=column.header)
         return column
 
     column.role = ROLE_IGNORE
-    column.reason = "não parece nome, número nem nota"
+    column.reason = Msg("reason.not_recognised")
     column.confidence = 0.4
     return column
 
@@ -426,7 +480,7 @@ def _pick_name_and_id(columns: list, data_rows: list) -> None:
         for column in names:
             if column is not best:
                 column.role = ROLE_IGNORE
-                column.reason = "outra coluna foi escolhida como nome"
+                column.reason = Msg("reason.other_name_column")
     elif not names:
         # Sem cabecalho util: usa a coluna com mais texto tipo nome.
         best, best_ratio = None, 0.0
@@ -438,7 +492,7 @@ def _pick_name_and_id(columns: list, data_rows: list) -> None:
         if best is not None and best_ratio >= 0.4:
             best.role = ROLE_NAME
             best.confidence = 0.5
-            best.reason = "coluna com mais texto parecido com nomes"
+            best.reason = Msg("reason.name_by_text")
 
     ids = [c for c in columns if c.role == ROLE_ID]
     if len(ids) > 1:
@@ -446,7 +500,7 @@ def _pick_name_and_id(columns: list, data_rows: list) -> None:
         for column in ids:
             if column is not best:
                 column.role = ROLE_GRADE if column.numeric_ratio > 0.8 else ROLE_IGNORE
-                column.reason = "outra coluna foi escolhida como número de aluno"
+                column.reason = Msg("reason.other_id_column")
 
 
 def epoca_from_text(text: str, strong_only: bool = False):
@@ -621,23 +675,25 @@ def _moment_verdict(previous: dict, block: dict, data_rows: list):
             failed_first += 1
 
     if not with_second:
-        return "recurso", (f"Ninguém tem nota em «{second.header}» — não dá para "
-                           "perceber pelos dados o que esta coluna é.")
+        return "recurso", Msg("evidence.nobody", header=second.header)
 
     coverage = with_second / max(total, 1)
     failed_share = failed_first / with_second if first is not None else 0.0
-    detail = (f"{with_second} de {total} alunos têm nota em «{second.header}»"
-              + (f", e {failed_first} desses não tinham passado no momento anterior"
-                 if first is not None else "") + ".")
+    detail = (Msg("evidence.counts_with_first", filled=with_second, total=total,
+                  header=second.header, failed=failed_first) if first is not None
+              else Msg("evidence.counts", filled=with_second, total=total,
+                       header=second.header))
+
+    def verdict(key: str, tail: str):
+        return key, Msg("text.two_sentences", first=detail, second=Msg(tail))
 
     if first is not None and failed_share >= 0.8 and coverage <= 0.7:
-        return "recurso", detail + " Só lá vão os que chumbaram: parece 2.ª época."
+        return verdict("recurso", "evidence.only_failed")
     if coverage >= 0.7:
-        return "continua", detail + (" Vai lá a turma quase toda: parece o 2.º teste "
-                                     "da mesma época.")
+        return verdict("continua", "evidence.almost_all")
     if failed_share >= 0.5:
-        return "recurso", detail + " A maioria tinha chumbado: parece 2.ª época."
-    return "continua", detail + " Os dados não são conclusivos."
+        return verdict("recurso", "evidence.most_failed")
+    return verdict("continua", "evidence.inconclusive")
 
 
 def _block_final(block: dict):
@@ -684,7 +740,7 @@ def _pick_final_columns(columns: list) -> None:
             for column in group:
                 if not column.locked:
                     column.kind = KIND_COMPONENT
-                    column.reason = "componente comum a todas as épocas"
+                    column.reason = Msg("reason.shared_component")
             continue
 
         candidates = [c for c in group if c.kind == KIND_FINAL]
@@ -698,7 +754,7 @@ def _pick_final_columns(columns: list) -> None:
                 chosen = fallback[-1]
                 chosen.kind = KIND_FINAL
                 chosen.confidence = min(chosen.confidence, 0.35)
-                chosen.reason = "última coluna do bloco (palpite)"
+                chosen.reason = Msg("reason.last_of_block")
             continue
 
         # Uma nota final por grupo de colunas com o mesmo preenchimento.
@@ -713,7 +769,7 @@ def _pick_final_columns(columns: list) -> None:
             for column in cluster:
                 if column is not best and not column.locked:
                     column.kind = KIND_COMPONENT
-                    column.reason = f"«{best.header}» foi escolhida como nota final"
+                    column.reason = Msg("reason.other_final_chosen", header=best.header)
             best.kind = KIND_FINAL
             if len(cluster) > 1 and not fixadas:
                 # So se pergunta quando as candidatas estao renhidas. Entre
@@ -727,7 +783,7 @@ def _pick_final_columns(columns: list) -> None:
             for cluster in by_cluster.values():
                 for column in cluster:
                     if column.kind == KIND_FINAL:
-                        column.reason += " (via alternativa desta época)"
+                        column.reason = Msg("reason.alt_route", reason=column.reason)
 
 
 # --------------------------------------------------------------------------
@@ -768,13 +824,13 @@ def guess_subject_code(filename: str, table: RawTable) -> Guess:
     for line in table.title_lines[:10]:
         code, acronym, name = parse_subject_header(line)
         if code and name and _subject_score(name) > 0:
-            return Guess(code, 0.9, f"código no documento: «{clean_text(line)[:60]}»")
+            return Guess(code, 0.9, Msg("guess.code_in_document", text=clean_text(line)[:60]))
         if acronym and name and _subject_score(name) > 0:
-            return Guess(acronym, 0.7, f"sigla no documento: «{clean_text(line)[:60]}»")
+            return Guess(acronym, 0.7, Msg("guess.acronym_in_document", text=clean_text(line)[:60]))
 
     acronym = _acronym_from(os.path.splitext(os.path.basename(filename))[0])
     if acronym:
-        return Guess(acronym, 0.5, f"sigla no nome do ficheiro: «{filename}»")
+        return Guess(acronym, 0.5, Msg("guess.acronym_in_filename", text=filename))
     return Guess(None, 0.0, "")
 
 
@@ -830,7 +886,7 @@ def guess_subject(filename: str, table: RawTable) -> Guess:
     for line in table.title_lines[:10]:
         code, acronym, name = parse_subject_header(line)
         if (code or acronym) and name and _subject_score(name) >= 6:
-            return Guess(name, 0.9, f"cabeçalho do documento: «{clean_text(line)[:60]}»")
+            return Guess(name, 0.9, Msg("guess.document_header", text=clean_text(line)[:60]))
 
     best_text, best_score = None, 0.0
     for line in table.title_lines[:10]:
@@ -845,26 +901,26 @@ def guess_subject(filename: str, table: RawTable) -> Guess:
                 best_text, best_score = segment, score
 
     if best_text and best_score >= 6:
-        return Guess(best_text, 0.85, f"título do documento: «{best_text}»")
+        return Guess(best_text, 0.85, Msg("guess.document_title", text=best_text))
 
     if table.sheet_name:
         cleaned = _clean_subject_token(table.sheet_name.replace("_", " ").replace("-", " "))
         if cleaned and len(cleaned) >= 4 and not norm_text(cleaned).startswith("sheet"):
-            return Guess(cleaned, 0.35, f"nome da folha: «{table.sheet_name}»")
+            return Guess(cleaned, 0.35, Msg("guess.sheet_name", text=table.sheet_name))
 
     stem = os.path.splitext(os.path.basename(filename))[0]
     acronym = _acronym_from(stem)
     if acronym:
-        return Guess(acronym, 0.5, f"sigla no nome do ficheiro: «{stem}»")
+        return Guess(acronym, 0.5, Msg("guess.acronym_in_filename", text=stem))
 
     if best_text:
-        return Guess(best_text, 0.4, f"texto do documento: «{best_text}»")
+        return Guess(best_text, 0.4, Msg("guess.document_text", text=best_text))
 
     cleaned = _clean_subject_token(stem.replace("_", " ").replace("-", " "))
     if cleaned and len(cleaned) >= 4:
-        return Guess(cleaned, 0.3, f"nome do ficheiro: «{stem}»")
+        return Guess(cleaned, 0.3, Msg("guess.filename", text=stem))
 
-    return Guess(None, 0.0, "não foi possível identificar a UC")
+    return Guess(None, 0.0, Msg("guess.subject_unknown"))
 
 
 def _acronym_from(stem: str) -> Optional[str]:
@@ -914,7 +970,7 @@ def guess_semester(filename: str, table: RawTable) -> Guess:
         match = _SEMESTER_BEFORE.search(normalized) or _SEMESTER_AFTER.search(normalized)
         if match:
             return Guess(match.group(1), 0.85,
-                         f"encontrado em «{clean_text(text)[:50]}»")
+                         Msg("guess.found_in", text=clean_text(text)[:50]))
     return Guess(None, 0.0, "")
 
 
@@ -953,7 +1009,7 @@ def guess_year(filename: str, table: RawTable) -> Guess:
             start, end = match.group(1), match.group(2)
             if len(end) == 2:
                 end = start[:2] + end
-            return Guess(f"{start}/{end}", 0.8, f"encontrado em «{clean_text(text)[:60]}»")
+            return Guess(f"{start}/{end}", 0.8, Msg("guess.found_in", text=clean_text(text)[:60]))
     return Guess(None, 0.0, "")
 
 
@@ -976,14 +1032,15 @@ def guess_document_date(table: RawTable) -> Optional[str]:
 def guess_file_epoca(filename: str, table: RawTable):
     """Epoca ao nivel do ficheiro/folha (nome do ficheiro, folha ou titulo)."""
     for text, label, strong_only in (
-        (os.path.basename(filename), "nome do ficheiro", False),
-        (table.sheet_name, "nome da folha", False),
-        (" ".join(table.title_lines[:2]), "título do documento", True),
+        (os.path.basename(filename), "where.filename", False),
+        (table.sheet_name, "where.sheet", False),
+        (" ".join(table.title_lines[:2]), "where.title", True),
     ):
         epoca, strength = epoca_from_text(text, strong_only=strong_only)
         if epoca:
             confidence = 0.85 if strength == "strong" else 0.5
-            return epoca, Guess(epoca, confidence, f"{label}: «{clean_text(text)[:60]}»")
+            return epoca, Guess(epoca, confidence, Msg("guess.epoca_found", where=Msg(label),
+                                           text=clean_text(text)[:60]))
     return None, Guess(None, 0.0, "")
 
 
@@ -1029,13 +1086,12 @@ def build_source(source_id: str, filename: str, kind: str, table: RawTable,
         file_order=file_order,
     )
     if epoca_guess.value:
-        source.notes.append(f"Época sugerida pelo ficheiro: {epoca_guess.reason}")
+        source.notes.append(Msg("note.epoca_from_file", reason=epoca_guess.reason))
     if component_label:
         source.component_label = component_label
         source.component_weight = component_weight
-        source.notes.append(
-            f"Esta pauta é só «{component_label}» ({component_weight}% da nota), "
-            "por isso conta como componente e não como nota final.")
+        source.notes.append(Msg("note.component_pauta", label=component_label,
+                                weight=component_weight))
     return source
 
 
@@ -1050,7 +1106,7 @@ def _mark_as_component_pauta(columns: list, label: str, weight: int) -> None:
     # Fixa a decisao: sem isto, a escolha automatica da nota final voltava a
     # promover esta coluna, por ser a unica coluna de notas do ficheiro.
     column.locked = True
-    column.reason = f"a pauta é de «{label}» ({weight}%), não da nota final"
+    column.reason = Msg("reason.component_pauta", label=label, weight=weight)
     if norm_header(column.header) in ("nota", "grade", "mark", "classificacao",
                                       "nota final", "valor"):
         column.header = f"{label} ({weight}%)"
@@ -1095,8 +1151,8 @@ def build_questions(sources: list) -> list:
                 id=f"{source.id}:subject",
                 type="subject",
                 source_id=source.id,
-                title=f"Qual é a unidade curricular de «{source.label}»?",
-                detail=source.subject.reason or "Não há nada no ficheiro que identifique a UC.",
+                title=Msg("question.subject.title", label=source.label),
+                detail=source.subject.reason or Msg("question.subject.detail"),
                 options=options,
                 default=source.subject.value,
                 allow_custom=True,
@@ -1104,15 +1160,15 @@ def build_questions(sources: list) -> list:
             ))
 
         grade_columns = source.grade_columns()
-        finals = [c for c in grade_columns if c.kind == KIND_FINAL]
+        finals = source.final_columns()
 
         if grade_columns and not finals and not source.component_label:
             questions.append(Question(
                 id=f"{source.id}:final",
                 type="final_column",
                 source_id=source.id,
-                title=f"Qual é a coluna com a nota final em «{source.label}»?",
-                detail="Nenhuma coluna se identificou claramente como nota final.",
+                title=Msg("question.final.title", label=source.label),
+                detail=Msg("question.final.detail"),
                 options=[{"value": str(c.index), "label": c.header,
                           "hint": ", ".join(c.samples[:3])} for c in grade_columns],
                 default=str(grade_columns[-1].index),
@@ -1126,9 +1182,10 @@ def build_questions(sources: list) -> list:
                     type="final_column",
                     source_id=source.id,
                     column_index=column.index,
-                    title=f"Em «{source.label}», qual coluna conta como nota final"
-                          + (f" da {_epoca_label(column.epoca)}?" if column.epoca else "?"),
-                    detail="Há mais do que uma coluna com ar de nota final.",
+                    title=(Msg("question.final_epoca.title", label=source.label,
+                               epoca=_epoca_msg(column.epoca)) if column.epoca
+                           else Msg("question.final_epoca.title_plain", label=source.label)),
+                    detail=Msg("question.final_epoca.detail"),
                     options=[{"value": str(c.index), "label": c.header,
                               "hint": ", ".join(c.samples[:3])}
                              for c in grade_columns if c.epoca == column.epoca],
@@ -1138,38 +1195,39 @@ def build_questions(sources: list) -> list:
         for question in _moment_questions(source, grade_columns):
             questions.append(question)
 
-        unknown_epoca = [c for c in grade_columns if c.epoca is None and c.kind == KIND_FINAL]
+        unknown_epoca = [c for c in finals if c.epoca is None]
         if unknown_epoca:
             questions.append(Question(
                 id=f"{source.id}:epoca",
                 type="epoca",
                 source_id=source.id,
-                title=f"A que época correspondem as notas de «{source.label}»?",
-                detail="Colunas sem época identificada: "
-                       + ", ".join(f"«{c.header}»" for c in unknown_epoca),
+                title=Msg("question.epoca.title", label=source.label),
+                detail=Msg("question.epoca.detail", columns=", ".join(
+                    f"«{c.header}»" for c in unknown_epoca)),
                 options=[
-                    {"value": EPOCA_1, "label": "1.ª Época"},
-                    {"value": EPOCA_2, "label": "2.ª Época"},
-                    {"value": EPOCA_ESP, "label": "Época Especial"},
+                    {"value": EPOCA_1, "label": _epoca_msg(EPOCA_1)},
+                    {"value": EPOCA_2, "label": _epoca_msg(EPOCA_2)},
+                    {"value": EPOCA_ESP, "label": _epoca_msg(EPOCA_ESP)},
                     {"value": "component",
-                     "label": "Não é uma época — é só um componente",
-                     "hint": "A coluna passa a contar como componente, sem nota final própria."},
+                     "label": Msg("question.epoca.option_ignore"),
+                     "hint": Msg("question.epoca.hint_ignore")},
                 ],
                 default=EPOCA_1,
                 severity="warning",
             ))
 
-        for column in grade_columns:
-            if column.kind == KIND_FINAL and column.max_value is not None:
+        for column in finals:
+            if column.max_value is not None:
                 if column.max_value <= 10 and column.scale == 20:
                     questions.append(Question(
                         id=f"{source.id}:scale:{column.index}",
                         type="scale",
                         source_id=source.id,
                         column_index=column.index,
-                        title=f"«{column.header}» em «{source.label}» está em que escala?",
-                        detail=f"O valor mais alto é {column.max_value:g}, "
-                               "o que tanto pode ser uma escala 0-20 como 0-10.",
+                        title=Msg("question.scale.title", header=column.header,
+                                  label=source.label),
+                        detail=Msg("question.scale.detail",
+                                   max=f"{column.max_value:g}"),
                         options=[
                             {"value": "20", "label": "0 a 20"},
                             {"value": "10", "label": "0 a 10"},
@@ -1180,8 +1238,8 @@ def build_questions(sources: list) -> list:
     return questions
 
 
-def _epoca_label(epoca: Optional[str]) -> str:
-    return EPOCA_LABELS.get(epoca or "", "época desconhecida")
+def _epoca_msg(epoca: Optional[str]) -> Msg:
+    return Msg(f"epoca.{epoca}") if epoca else Msg("epoca.unknown")
 
 
 def _moment_questions(source: Source, grade_columns: list) -> list:
@@ -1194,8 +1252,11 @@ def _moment_questions(source: Source, grade_columns: list) -> list:
     """
     moments: dict = {}
     for column in grade_columns:
-        if column.moment and column.moment > 1:
+        # So interessa quando o momento e a nota final de alguma epoca: as
+        # colunas de componentes nao entram no resultado.
+        if column.is_final and column.moment and column.moment > 1:
             moments.setdefault(column.moment, []).append(column)
+
 
     questions = []
     for moment, group in sorted(moments.items()):
@@ -1205,26 +1266,26 @@ def _moment_questions(source: Source, grade_columns: list) -> list:
 
         options = [{
             "value": previous,
-            "label": f"{moment}.º teste da {EPOCA_LABELS[previous]}",
-            "hint": "avaliação contínua — faz-se no mesmo dia do exame",
+            "label": Msg("question.moment.same", moment=moment,
+                         epoca=_epoca_msg(previous)),
+            "hint": Msg("question.moment.same_hint"),
         }]
         for epoca in (EPOCA_2, EPOCA_ESP):
             if epoca != previous:
                 options.append({
                     "value": epoca,
-                    "label": f"{EPOCA_LABELS[epoca]} (exame)",
-                    "hint": "quem chumbou na época anterior vai a este exame",
+                    "label": Msg("question.moment.other", epoca=_epoca_msg(epoca)),
+                    "hint": Msg("question.moment.other_hint"),
                 })
 
         questions.append(Question(
             id=f"{source.id}:moment:{moment}",
             type="moment",
             source_id=source.id,
-            title=f"Em «{source.label}», {headers} é um segundo momento de avaliação. "
-                  f"É o {moment}.º teste da mesma época ou é outra época?",
-            detail=(group[0].evidence or "") +
-                   f" O {moment}.º teste conta para a mesma época; um exame de recurso "
-                   "é a época seguinte.",
+            title=Msg("question.moment.title", label=source.label,
+                      headers=headers, moment=moment),
+            detail=Msg("question.moment.detail",
+                       evidence=group[0].evidence or "", moment=moment),
             options=options,
             default=group[0].epoca or previous,
             severity="warning",
@@ -1245,17 +1306,17 @@ def apply_answers(sources: list, answers: dict) -> None:
         kind = parts[1]
 
         if kind == "subject":
-            source.subject = Guess(clean_text(value), 1.0, "definido pelo utilizador")
+            source.subject = Guess(clean_text(value), 1.0, Msg("guess.user_defined"))
         elif kind == "epoca":
             for column in source.grade_columns():
-                if column.epoca is not None:
+                if column.epoca is not None or not column.is_final:
                     continue
                 if value == "component":
                     column.kind = KIND_COMPONENT
-                    column.reason = "marcado como componente pelo utilizador"
+                    column.reason = Msg("reason.user_component")
                 else:
                     column.epoca = value
-                    column.reason = "época definida pelo utilizador"
+                    column.reason = Msg("reason.user_epoca")
                 column.confidence = 1.0
                 column.locked = True
         elif kind == "moment":
@@ -1269,7 +1330,7 @@ def apply_answers(sources: list, answers: dict) -> None:
                     column.route = (ROUTE_EXAME if value in (EPOCA_2, EPOCA_ESP)
                                     else ROUTE_CONTINUA)
                     column.confidence = 1.0
-                    column.reason = "momento definido pelo utilizador"
+                    column.reason = Msg("reason.user_moment")
         elif kind == "final":
             try:
                 chosen_index = int(value)
@@ -1286,7 +1347,7 @@ def apply_answers(sources: list, answers: dict) -> None:
             chosen.kind = KIND_FINAL
             chosen.confidence = 1.0
             chosen.locked = True
-            chosen.reason = "nota final definida pelo utilizador"
+            chosen.reason = Msg("reason.user_final")
         elif kind == "scale":
             try:
                 column_index = int(parts[2])
@@ -1339,7 +1400,7 @@ def apply_column_overrides(sources: list, overrides: dict) -> None:
                     pass
             column.confidence = 1.0
             column.locked = True
-            column.reason = "definido pelo utilizador"
+            column.reason = Msg("reason.user_defined")
 
     for source in sources:
         refresh_columns(source)
@@ -1353,5 +1414,6 @@ def refresh_columns(source: Source) -> None:
     certo com o que estava no ecra. Sem isto, um ajuste manual podia
     simplesmente nao ter efeito.
     """
+    _promote_exam_routes(source.columns, source.data_rows)
     _compute_clusters(source.columns, source.data_rows)
     _pick_final_columns(source.columns)

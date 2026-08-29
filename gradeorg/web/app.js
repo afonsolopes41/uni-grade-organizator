@@ -12,6 +12,7 @@ const state = {
   search: '',
   onlySelected: false,
   openRows: new Set(),
+  showConfirmed: false,
 };
 
 /* ------------------------------------------------------------------ rede */
@@ -53,6 +54,34 @@ function toast(message, isError) {
 const escapeHtml = (value) =>
   String(value ?? '').replace(/[&<>"']/g, (c) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+const num = (value) => String(value).replace('.', ',');
+
+/* ------------------------------------------------------------------ língua */
+
+/* A língua vive na sessão do servidor (é ela que traduz perguntas e avisos)
+   e fica também aqui, para a página abrir já na língua certa. */
+async function switchLanguage(code) {
+  if (code === LANG) return;
+  setLanguage(code);
+  try { localStorage.setItem('gradeorg.lang', code); } catch (error) { /* privado */ }
+  paintLanguage();
+  applyStaticText();
+  busy(true, t('busy.applying'));
+  try {
+    state.review = await postJSON('/api/language', { language: code });
+    state.results = null;
+    renderFiles();
+    renderReview();
+    if (state.step === 'results') await loadResults();
+  } catch (error) { toast(error.message, true); } finally { busy(false); }
+}
+
+function paintLanguage() {
+  document.querySelectorAll('#lang button').forEach((button) => {
+    button.classList.toggle('is-on', button.dataset.lang === LANG);
+  });
+}
 
 /* ------------------------------------------------------------- navegação */
 
@@ -111,16 +140,16 @@ function setupDropzone() {
 async function upload(fileList) {
   const form = new FormData();
   for (const file of fileList) form.append('files', file);
-  busy(true, `A ler ${fileList.length} ficheiro(s)…`);
+  busy(true, t('busy.reading', { n: fileList.length }));
   try {
-    const data = await postJSON_form(form);
+    const data = await api('/api/upload', { method: 'POST', body: form });
     state.review = data;
     state.results = null;
     renderFiles();
     renderUploadErrors(data.rejected || []);
     refreshStepAvailability();
     if ((data.accepted || []).length) {
-      toast(`${data.accepted.length} ficheiro(s) lido(s).`);
+      toast(t('toast.read', { n: data.accepted.length }));
       renderReview();
       goto('review');
     }
@@ -131,33 +160,51 @@ async function upload(fileList) {
   }
 }
 
-const postJSON_form = (form) =>
-  api('/api/upload', { method: 'POST', body: form });
-
 function renderFiles() {
   const files = state.review?.files || [];
+  const conhecidas = state.review?.subjects || [];
   $('file-list').innerHTML = files.map((file) => {
     const sources = (state.review.sources || []).filter((s) => s.filename === file.name);
-    const subjects = [...new Set(sources.map((s) => s.subject.value).filter(Boolean))];
+    const rows = sources.reduce((n, s) => n + s.row_count, 0);
+    // A cadeira que o utilizador escolheu para este ficheiro, se escolheu.
+    const escolhida = sources
+      .map((s) => state.review.answers[`${s.id}:subject`])
+      .find(Boolean) || '';
+    const detectada = [...new Set(sources.map((s) => s.subject.value).filter(Boolean))];
     return `
       <div class="file-card">
         <div class="file-kind">${escapeHtml(file.kind.toUpperCase())}</div>
         <div class="grow">
           <div class="name">${escapeHtml(file.name)}</div>
           <div class="meta">
-            ${file.tables} tabela(s)
-            ${subjects.length ? ' · ' + escapeHtml(subjects.join(', ')) : ''}
-            ${sources.length ? ' · ' + sources.reduce((n, s) => n + s.row_count, 0) + ' linhas' : ''}
+            ${escapeHtml(t('file.tables', { n: file.tables }))}
+            ${sources.length ? ' · ' + escapeHtml(t('file.rows', { n: rows })) : ''}
           </div>
         </div>
+        <label class="file-subject">
+          <span>${escapeHtml(t('file.subject'))}</span>
+          <select data-assign="${escapeHtml(file.name)}">
+            <option value="">${escapeHtml(detectada.length
+              ? detectada.join(', ') + ' ' + t('file.subject_auto')
+              : t('file.subject_auto'))}</option>
+            ${conhecidas.map((s) => `<option value="${escapeHtml(s)}"
+              ${escolhida === s ? 'selected' : ''}>${escapeHtml(s)}</option>`).join('')}
+          </select>
+        </label>
         <button class="icon-btn" data-remove="${escapeHtml(file.name)}"
-                title="Remover ficheiro">✕</button>
+                title="${escapeHtml(t('file.remove'))}">✕</button>
       </div>`;
   }).join('');
 
+  $('file-list').querySelectorAll('[data-assign]').forEach((select) => {
+    select.addEventListener('change', () => subjectAction({
+      action: 'assign', file: select.dataset.assign, subject: select.value,
+    }));
+  });
+
   $('file-list').querySelectorAll('[data-remove]').forEach((button) => {
     button.addEventListener('click', async () => {
-      busy(true, 'A remover…');
+      busy(true, t('busy.removing'));
       try {
         state.review = await postJSON('/api/files/remove', { name: button.dataset.remove });
         state.results = null;
@@ -173,7 +220,7 @@ function renderFiles() {
 function renderUploadErrors(rejected) {
   $('upload-errors').innerHTML = rejected.map((item) => `
     <div class="notice error">
-      <span class="icon">⚠</span>
+      <span class="icon">!</span>
       <span><b>${escapeHtml(item.name)}</b>${escapeHtml(item.error)}</span>
     </div>`).join('');
 }
@@ -195,11 +242,9 @@ function renderQuestions() {
 
   if (!questions.length) {
     container.innerHTML = `
-      <div class="card">
-        <h2 class="section-title">Está tudo identificado ✓</h2>
-        <p class="section-lead">Todas as unidades curriculares e épocas foram
-        reconhecidas automaticamente. Pode ver as notas consolidadas — ou abrir os
-        ajustes avançados para confirmar coluna a coluna.</p>
+      <div class="card card-calm">
+        <h2 class="section-title">${escapeHtml(t('questions.none.title'))} <span class="tick">✓</span></h2>
+        <p class="section-lead">${escapeHtml(t('questions.none.lead'))}</p>
       </div>`;
     return;
   }
@@ -218,11 +263,20 @@ function renderQuestions() {
 
     const custom = question.allow_custom ? `
       <div class="custom-row">
-        <input type="text" placeholder="…ou escreva o nome da unidade curricular"
+        <input type="text" placeholder="${escapeHtml(t('questions.custom'))}"
                data-custom="${escapeHtml(question.id)}"
                value="${escapeHtml(customValue(question))}">
-        <button class="btn btn-ghost btn-sm" data-custom-save="${escapeHtml(question.id)}">Usar</button>
+        <button class="btn btn-ghost btn-sm"
+                data-custom-save="${escapeHtml(question.id)}">${escapeHtml(t('action.save'))}</button>
       </div>` : '';
+
+    // Um botão para abrir a pauta: é muito mais fácil responder a olhar para ela.
+    const documento = question.source_id ? `
+      <a class="btn btn-ghost btn-sm open-doc" target="_blank" rel="noopener"
+         href="/api/document/${encodeURIComponent(question.source_id)}">
+        ⧉ ${escapeHtml(t('questions.open_document'))}
+        <small>${escapeHtml(t('questions.open_hint'))}</small>
+      </a>` : '';
 
     return `
       <div class="card question ${question.severity === 'warning' ? 'is-warning' : ''}"
@@ -231,16 +285,15 @@ function renderQuestions() {
         ${question.detail ? `<p class="detail">${escapeHtml(question.detail)}</p>` : ''}
         <div class="choices">${choices}</div>
         ${custom}
+        ${documento}
       </div>`;
   }).join('');
 
   container.innerHTML = `
-    <div class="card">
-      <h2 class="section-title">Faltam ${questions.length} confirmação(ões)</h2>
-      <p class="section-lead">Os ficheiros não dizem tudo o que é preciso saber.
-      A opção já marcada é o palpite da aplicação — clique nela para a confirmar,
-      ou escolha outra. O que não for confirmado fica com o palpite.</p>
-      <button class="btn btn-ghost btn-sm" id="accept-all">✓ Aceitar todos os palpites</button>
+    <div class="card card-calm">
+      <h2 class="section-title">${escapeHtml(t('questions.title', { n: questions.length }))}</h2>
+      <p class="section-lead">${escapeHtml(t('questions.lead'))}</p>
+      <button class="btn btn-ghost btn-sm" id="accept-all">✓ ${escapeHtml(t('questions.accept_all'))}</button>
     </div>
     ${cards}`;
 
@@ -282,33 +335,35 @@ function saveAnswer(id, value) {
 
 async function saveAnswers(answers) {
   if (!Object.keys(answers).length) return;
-  busy(true, 'A aplicar…');
+  await applyToReview({ answers });
+}
+
+const saveSettings = (settings) => applyToReview({ settings });
+
+const saveOverride = (sourceId, columnIndex, spec) =>
+  applyToReview({ overrides: { [sourceId]: { [columnIndex]: spec } } });
+
+async function applyToReview(body) {
+  busy(true, t('busy.applying'));
   try {
-    state.review = await postJSON('/api/answers', { answers });
+    state.review = await postJSON('/api/answers', body);
     state.results = null;
     renderReview();
     renderFiles();
   } catch (error) { toast(error.message, true); } finally { busy(false); }
 }
 
-async function saveSettings(settings) {
-  busy(true, 'A aplicar…');
+async function subjectAction(body) {
+  busy(true, t('busy.applying'));
   try {
-    state.review = await postJSON('/api/answers', { settings });
+    state.review = await postJSON('/api/subjects', body);
     state.results = null;
     renderReview();
+    renderFiles();
   } catch (error) { toast(error.message, true); } finally { busy(false); }
 }
 
-async function saveOverride(sourceId, columnIndex, spec) {
-  busy(true, 'A aplicar…');
-  try {
-    state.review = await postJSON('/api/answers',
-      { overrides: { [sourceId]: { [columnIndex]: spec } } });
-    state.results = null;
-    renderReview();
-  } catch (error) { toast(error.message, true); } finally { busy(false); }
-}
+/* ------------------------------------------------- unidades curriculares */
 
 function renderCurriculum() {
   const data = state.review;
@@ -319,32 +374,51 @@ function renderCurriculum() {
   const detected = data.detected_semesters || {};
   const marks = data.pass_marks || {};
   const codes = data.subject_codes || {};
-  const porPreencher = subjects.filter((s) => {
+  const files = data.subject_files || {};
+  const removed = new Set(data.removed_subjects || []);
+  const cursos = [...new Set(Object.values(data.courses || {}).filter(Boolean))];
+
+  const live = subjects.filter((s) => !removed.has(s));
+  const porPreencher = live.filter((s) => {
     const meta = curriculum[s] || {};
     return meta.year == null || meta.semester == null;
   }).length;
 
-  const linhas = subjects.map((subject) => {
+  const linhas = live.map((subject) => {
     const meta = curriculum[subject] || {};
     const semestre = meta.semester ?? (detected[subject] ? Number(detected[subject]) : null);
+    const origem = files[subject] || [];
     return `
       <tr>
-        <td>
-          <div class="uc-nome">${escapeHtml(subject)}</div>
+        <td class="uc-name-cell">
+          <input class="uc-name" type="text" value="${escapeHtml(subject)}"
+                 title="${escapeHtml(t('uc.rename'))}"
+                 data-rename="${escapeHtml(subject)}">
           ${codes[subject] ? `<div class="uc-codigo">${escapeHtml(codes[subject])}</div>` : ''}
+        </td>
+        <td class="uc-files" title="${escapeHtml(origem.join(' · '))}">
+          ${origem.length
+            ? origem.map((f) => `<span class="file-tag">${escapeHtml(f)}</span>`).join('')
+            : `<span class="sem-pautas">${escapeHtml(t('uc.no_files'))}</span>`}
+        </td>
+        <td>
+          <input type="text" list="cursos-conhecidos" class="uc-course"
+                 placeholder="${escapeHtml(t('uc.course_placeholder'))}"
+                 value="${escapeHtml(meta.course || '')}"
+                 data-uc="${escapeHtml(subject)}" data-campo="course">
         </td>
         <td class="num ${meta.year == null ? 'falta' : ''}">
           <select data-uc="${escapeHtml(subject)}" data-campo="year">
             <option value="">—</option>
             ${[1, 2, 3, 4, 5].map((y) =>
-              `<option value="${y}" ${meta.year === y ? 'selected' : ''}>${y}.º</option>`).join('')}
+              `<option value="${y}" ${meta.year === y ? 'selected' : ''}>${escapeHtml(t('uc.year_option', { n: y }))}</option>`).join('')}
           </select>
         </td>
         <td class="num ${semestre == null ? 'falta' : ''}">
           <select data-uc="${escapeHtml(subject)}" data-campo="semester">
             <option value="">—</option>
             ${[1, 2].map((n) =>
-              `<option value="${n}" ${semestre === n ? 'selected' : ''}>${n}.º</option>`).join('')}
+              `<option value="${n}" ${semestre === n ? 'selected' : ''}>${n}</option>`).join('')}
           </select>
         </td>
         <td class="num">
@@ -356,26 +430,48 @@ function renderCurriculum() {
                  value="${marks[subject] ?? data.settings.pass_mark}"
                  data-uc="${escapeHtml(subject)}" data-campo="pass_mark">
         </td>
+        <td class="num">
+          <button class="icon-btn danger" data-remove-uc="${escapeHtml(subject)}"
+                  title="${escapeHtml(t('uc.delete'))}">✕</button>
+        </td>
       </tr>`;
   }).join('');
 
+  const apagadas = removed.size ? `
+    <p class="removed-strip"><b>${escapeHtml(t('uc.removed'))}</b>
+      ${[...removed].map((s) => `
+        <span class="removed-tag"><s>${escapeHtml(s)}</s>
+          <button data-restore-uc="${escapeHtml(s)}">${escapeHtml(t('uc.restore'))}</button>
+        </span>`).join('')}
+    </p>` : '';
+
   $('curriculum').innerHTML = `
     <div class="card">
-      <h2 class="section-title">Unidades curriculares</h2>
-      <p class="section-lead">
-        Diga a que ano e semestre pertence cada cadeira — é isso que permite as
-        médias por semestre, por ano e a média final de curso. Os ECTS são
-        opcionais: se os preencher em todas, as médias passam a ser ponderadas
-        por eles; se não, é a média simples.
-        ${porPreencher ? `<b>Faltam o ano ou o semestre em ${porPreencher} cadeira(s).</b>` : ''}
+      <h2 class="section-title">${escapeHtml(t('uc.title'))}</h2>
+      <p class="section-lead">${escapeHtml(t('uc.lead'))}
+        ${porPreencher ? `<b>${escapeHtml(t('uc.missing', { n: porPreencher }))}</b>` : ''}</p>
+      <div class="table-scroll">
+        <table class="uc-table">
+          <thead><tr>
+            <th>${escapeHtml(t('uc.col.name'))}</th>
+            <th>${escapeHtml(t('uc.col.files'))}</th>
+            <th>${escapeHtml(t('uc.col.course'))}<small>${escapeHtml(t('uc.course_hint'))}</small></th>
+            <th class="num">${escapeHtml(t('uc.col.year'))}</th>
+            <th class="num">${escapeHtml(t('uc.col.semester'))}</th>
+            <th class="num">${escapeHtml(t('uc.col.ects'))}</th>
+            <th class="num">${escapeHtml(t('uc.col.pass'))}</th>
+            <th></th>
+          </tr></thead>
+          <tbody>${linhas}</tbody>
+        </table>
+      </div>
+      <p class="uc-actions">
+        <button class="btn btn-ghost btn-sm" id="btn-nova-uc">${escapeHtml(t('uc.add'))}</button>
       </p>
-      <table class="uc-table">
-        <thead><tr>
-          <th>Unidade curricular</th><th class="num">Ano</th><th class="num">Semestre</th>
-          <th class="num">ECTS</th><th class="num">Nota mínima</th>
-        </tr></thead>
-        <tbody>${linhas}</tbody>
-      </table>
+      ${apagadas}
+      <datalist id="cursos-conhecidos">
+        ${cursos.map((c) => `<option value="${escapeHtml(c)}"></option>`).join('')}
+      </datalist>
     </div>`;
 
   $('curriculum').querySelectorAll('[data-uc]').forEach((campo) => {
@@ -389,107 +485,178 @@ function renderCurriculum() {
       }
     });
   });
+
+  $('curriculum').querySelectorAll('[data-rename]').forEach((campo) => {
+    const commit = () => {
+      const antigo = campo.dataset.rename;
+      const novo = campo.value.trim();
+      if (!novo || novo === antigo) { campo.value = antigo; return; }
+      subjectAction({ action: 'rename', subject: antigo, name: novo });
+    };
+    campo.addEventListener('change', commit);
+    campo.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') campo.blur();
+      if (event.key === 'Escape') { campo.value = campo.dataset.rename; campo.blur(); }
+    });
+  });
+
+  $('curriculum').querySelectorAll('[data-remove-uc]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const subject = button.dataset.removeUc;
+      if (!window.confirm(t('uc.delete_confirm', { name: subject }))) return;
+      subjectAction({ action: 'remove', subject });
+    });
+  });
+  $('curriculum').querySelectorAll('[data-restore-uc]').forEach((button) => {
+    button.addEventListener('click', () =>
+      subjectAction({ action: 'restore', subject: button.dataset.restoreUc }));
+  });
+
+  $('curriculum').querySelector('#btn-nova-uc').addEventListener('click', () => {
+    const nome = (window.prompt(t('uc.add_prompt')) || '').trim();
+    if (nome) subjectAction({ action: 'create', name: nome });
+  });
 }
 
-const ROLE_LABELS = {
-  name: 'Nome do aluno', id: 'Nº de aluno', grade: 'Nota', ignore: 'Ignorar',
-};
-const EPOCA_OPTIONS = [
-  ['', '— sem época (componente comum)'],
-  ['epoca1', '1.ª Época'], ['epoca2', '2.ª Época'], ['especial', 'Época Especial'],
-];
-// Dentro de uma época pode haver mais do que um momento de avaliação: o 1.º
-// teste e o 2.º, que se faz no dia do exame.
-const MOMENT_OPTIONS = [
-  ['', '—'],
-  ['1', '1.º teste / momento'],
-  ['2', '2.º teste / momento'],
-  ['3', '3.º momento'],
+/* ------------------------------------------------------ ajustes avançados */
+
+const EPOCA_OPTIONS = () => [
+  ['', t('epoca.none')],
+  ['epoca1', t('epoca.epoca1')],
+  ['epoca2', t('epoca.epoca2')],
+  ['especial', t('epoca.especial')],
 ];
 
+/* A aplicação só quer a nota final: as outras colunas ficam de fora, por isso
+   aqui há quatro papéis e mais nada. */
+const ROLE_OPTIONS = () => [
+  ['name', t('role.name')],
+  ['id', t('role.id')],
+  ['final', t('role.final')],
+  ['ignore', t('role.ignore')],
+];
+
+const roleOf = (column) => {
+  if (column.role === 'name' || column.role === 'id') return column.role;
+  if (column.role === 'grade' && column.kind === 'final') return 'final';
+  return 'ignore';
+};
+
 function renderSources() {
-  $('sources').innerHTML = (state.review.sources || []).map((source) => {
-    const rows = source.columns.map((column) => `
-      <tr>
+  const epocas = EPOCA_OPTIONS();
+  const papeis = ROLE_OPTIONS();
+  const confirmadas = new Set(state.review.confirmed_sources || []);
+  const todas = state.review.sources || [];
+  const visiveis = state.showConfirmed
+    ? todas : todas.filter((s) => !confirmadas.has(s.id));
+
+  const arrumadas = confirmadas.size ? `
+    <p class="confirmed-strip">
+      ${escapeHtml(t('source.confirmed', { n: confirmadas.size }))}
+      <button id="toggle-confirmed">${escapeHtml(
+        state.showConfirmed ? t('source.hide_confirmed') : t('source.show_confirmed'))}</button>
+    </p>` : '';
+
+  $('sources').innerHTML = arrumadas + visiveis.map((source) => {
+    const confirmada = confirmadas.has(source.id);
+    const rows = source.columns.map((column) => {
+      const papel = roleOf(column);
+      return `
+      <tr class="${papel === 'final' ? 'is-final' : ''}">
         <td><b>${escapeHtml(column.header)}</b></td>
         <td>
           <select data-src="${source.id}" data-col="${column.index}" data-field="role">
-            ${Object.entries(ROLE_LABELS).map(([value, label]) =>
-              `<option value="${value}" ${column.role === value ? 'selected' : ''}>${label}</option>`).join('')}
+            ${papeis.map(([value, label]) =>
+              `<option value="${value}" ${papel === value ? 'selected' : ''}>${escapeHtml(label)}</option>`).join('')}
           </select>
         </td>
         <td>
-          <select data-src="${source.id}" data-col="${column.index}" data-field="epoca"
-                  ${column.role !== 'grade' ? 'disabled' : ''}>
-            ${EPOCA_OPTIONS.map(([value, label]) =>
-              `<option value="${value}" ${(column.epoca || '') === value ? 'selected' : ''}>${label}</option>`).join('')}
-          </select>
+          ${papel === 'final' ? `
+          <select data-src="${source.id}" data-col="${column.index}" data-field="epoca">
+            ${epocas.map(([value, label]) =>
+              `<option value="${value}" ${(column.epoca || '') === value ? 'selected' : ''}>${escapeHtml(label)}</option>`).join('')}
+          </select>` : '<span class="plain">—</span>'}
         </td>
-        <td>
-          <select data-src="${source.id}" data-col="${column.index}" data-field="kind"
-                  ${column.role !== 'grade' ? 'disabled' : ''}>
-            <option value="final" ${column.kind === 'final' ? 'selected' : ''}>Nota final</option>
-            <option value="component" ${column.kind === 'component' ? 'selected' : ''}>Componente</option>
-          </select>
-        </td>
-        <td>
-          <select data-src="${source.id}" data-col="${column.index}" data-field="moment"
-                  ${column.role !== 'grade' ? 'disabled' : ''}>
-            ${MOMENT_OPTIONS.map(([value, label]) =>
-              `<option value="${value}" ${String(column.moment || '') === value ? 'selected' : ''}>${label}</option>`).join('')}
-          </select>
-        </td>
-        <td>${column.moment && column.moment > 1
-              ? `<span class="badge amber" title="${escapeHtml(column.evidence || '')}">2.º momento</span>`
-              : ''}${column.route
-              ? `<span class="badge">${column.route === 'exame' ? 'Exame' : 'Contínua'}</span>`
-              : ''}</td>
         <td class="samples" title="${escapeHtml(column.samples.join(' · '))}">
           ${escapeHtml(column.samples.join(' · ')) || '—'}</td>
-        <td><span class="badge ${column.confidence >= 0.7 ? 'green' : column.confidence >= 0.5 ? 'amber' : 'red'}"
+        <td><span class="badge ${column.confidence >= 0.7 ? 'green' : column.confidence >= 0.5 ? 'amber' : 'grey'}"
                   title="${escapeHtml(column.reason)}">${Math.round(column.confidence * 100)}%</span></td>
-      </tr>`).join('');
+      </tr>`;
+    }).join('');
 
     return `
-      <div class="source-block">
+      <div class="source-block ${confirmada ? 'is-confirmed' : ''}">
         <div class="source-head">
           <span class="title">${escapeHtml(source.filename)}</span>
           <div class="badge-row">
-            <span class="badge">${escapeHtml(source.location)}</span>
-            <span class="badge accent">${escapeHtml(source.subject.value || 'UC por definir')}</span>
+            ${source.location ? `<span class="badge">${escapeHtml(source.location)}</span>` : ''}
+            <span class="badge accent">${escapeHtml(source.subject.value || t('source.no_subject'))}</span>
             ${source.academic_year.value ? `<span class="badge">${escapeHtml(source.academic_year.value)}</span>` : ''}
-            ${source.document_date ? `<span class="badge">documento de ${escapeHtml(source.document_date)}</span>` : ''}
-            <span class="badge">${source.row_count} alunos</span>
+            ${source.document_date ? `<span class="badge">${escapeHtml(t('source.document_of', { date: source.document_date }))}</span>` : ''}
+            <span class="badge">${escapeHtml(t('source.students', { n: source.row_count }))}</span>
             ${source.component_label
-              ? `<span class="badge amber">só «${escapeHtml(source.component_label)}» (${source.component_weight}%)</span>`
+              ? `<span class="badge amber">${escapeHtml(t('source.only_component', { label: source.component_label, weight: source.component_weight }))}</span>`
               : ''}
+          </div>
+          <div class="source-tools">
+            <a class="btn btn-ghost btn-sm" target="_blank" rel="noopener"
+               href="/api/document/${encodeURIComponent(source.id)}">⧉ ${escapeHtml(t('source.open'))}</a>
+            <button class="btn ${confirmada ? 'btn-ghost' : 'btn-ok'} btn-sm"
+                    data-confirm="${source.id}" data-confirmed="${confirmada ? '1' : ''}"
+                    title="${escapeHtml(t('source.confirm_hint'))}">${escapeHtml(
+              confirmada ? t('source.reopen') : t('source.confirm'))}</button>
           </div>
         </div>
         ${(source.notes || []).length ? `<p class="source-note">${
           source.notes.map(escapeHtml).join('<br>')}</p>` : ''}
-        <table class="col-table">
-          <thead><tr>
-            <th>Coluna</th><th>É</th><th>Época</th><th>Tipo</th><th>Momento</th>
-            <th>Via</th><th>Exemplos</th><th>Confiança</th>
-          </tr></thead>
-          <tbody>${rows}</tbody>
-        </table>
+        <div class="table-scroll">
+          <table class="col-table">
+            <thead><tr>
+              <th>${escapeHtml(t('col.header'))}</th><th>${escapeHtml(t('col.role'))}</th>
+              <th>${escapeHtml(t('col.epoca'))}</th><th>${escapeHtml(t('col.samples'))}</th>
+              <th>${escapeHtml(t('col.confidence'))}</th>
+            </tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
       </div>`;
   }).join('');
+
+  const alternar = $('sources').querySelector('#toggle-confirmed');
+  if (alternar) alternar.addEventListener('click', () => {
+    state.showConfirmed = !state.showConfirmed;
+    renderSources();
+  });
+
+  $('sources').querySelectorAll('[data-confirm]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      busy(true, t('busy.applying'));
+      try {
+        state.review = await postJSON('/api/sources/confirm', {
+          source_id: button.dataset.confirm, confirmed: !button.dataset.confirmed,
+        });
+        renderSources();
+      } catch (error) { toast(error.message, true); } finally { busy(false); }
+    });
+  });
 
   $('sources').querySelectorAll('select').forEach((select) => {
     select.addEventListener('change', () => {
       const { src, col, field } = select.dataset;
-      const spec = { [field]: select.value };
-      // Marcar uma coluna como nota sem dizer mais nada deixava-a sem época e
-      // sem tipo, e portanto sem efeito nenhum no resultado.
-      if (field === 'role' && select.value === 'grade') {
-        const source = (state.review.sources || []).find((s) => s.id === src);
-        const column = source?.columns.find((c) => String(c.index) === String(col));
-        if (column && !column.epoca) spec.epoca = 'epoca1';
-        if (column && column.kind !== 'final') spec.kind = 'component';
+      if (field !== 'role') { saveOverride(src, col, { [field]: select.value }); return; }
+
+      const source = (state.review.sources || []).find((s) => s.id === src);
+      const column = source?.columns.find((c) => String(c.index) === String(col));
+      if (select.value === 'final') {
+        // Marcar como nota final sem dizer a época deixava-a sem efeito nenhum.
+        saveOverride(src, col, {
+          role: 'grade', kind: 'final', epoca: column?.epoca || 'epoca1',
+        });
+      } else if (select.value === 'ignore') {
+        saveOverride(src, col, { role: 'ignore', kind: 'component' });
+      } else {
+        saveOverride(src, col, { role: select.value });
       }
-      saveOverride(src, col, spec);
     });
   });
 }
@@ -497,7 +664,7 @@ function renderSources() {
 /* ---------------------------------------------------------- resultados */
 
 async function loadResults() {
-  busy(true, 'A juntar as notas…');
+  busy(true, t('busy.joining'));
   try {
     state.results = await api('/api/results');
     renderResults();
@@ -511,24 +678,29 @@ function renderResults() {
 
   const stats = data.stats;
   $('stats').innerHTML = `
-    <div class="stat"><div class="value">${stats.students}</div><div class="label">alunos</div></div>
-    <div class="stat"><div class="value">${stats.subjects}</div><div class="label">unidades curriculares</div></div>
-    <div class="stat green"><div class="value">${stats.approved}</div><div class="label">aprovações</div></div>
-    <div class="stat red"><div class="value">${stats.failed}</div><div class="label">reprovações</div></div>
-    <div class="stat"><div class="value">${stats.average ?? '—'}</div><div class="label">média das melhores notas</div></div>`;
+    <div class="stat"><div class="value">${stats.students}</div><div class="label">${escapeHtml(t('stats.students'))}</div></div>
+    <div class="stat"><div class="value">${stats.subjects}</div><div class="label">${escapeHtml(t('stats.subjects'))}</div></div>
+    <div class="stat green"><div class="value">${stats.approved}</div><div class="label">${escapeHtml(t('stats.approved'))}</div></div>
+    <div class="stat red"><div class="value">${stats.failed}</div><div class="label">${escapeHtml(t('stats.failed'))}</div></div>
+    <div class="stat"><div class="value">${stats.average ?? '—'}</div><div class="label">${escapeHtml(t('stats.average'))}</div></div>`;
 
   $('pending-warning').innerHTML = (data.questions || []).length ? `
     <div class="notice warning">
-      <span class="icon">⚠</span>
-      <span><b>${data.questions.length} confirmação(ões) por responder</b>
-      As notas abaixo usam os palpites automáticos. Volte a «Confirmar» para as rever.</span>
+      <span class="icon">!</span>
+      <span><b>${escapeHtml(t('results.pending', { n: data.questions.length }))}</b>
+      ${escapeHtml(t('results.pending_lead'))}</span>
     </div>` : '';
 
   renderPassMarks();
 
-  $('subject-filters').innerHTML = data.subjects.map((subject) => `
-    <button class="chip ${state.hiddenSubjects.has(subject) ? '' : 'is-on'}"
-            data-subject="${escapeHtml(subject)}">${escapeHtml(subject)}</button>`).join('');
+  $('subject-filters').innerHTML = groupsOf(data.subjects).map((grupo) => `
+    <span class="chip-group">
+      ${grupo.year != null || grupo.semester != null
+        ? `<span class="chip-group-label">${escapeHtml(groupLabel(grupo))}</span>` : ''}
+      ${grupo.subjects.map((subject) => `
+        <button class="chip ${state.hiddenSubjects.has(subject) ? '' : 'is-on'}"
+                data-subject="${escapeHtml(subject)}">${escapeHtml(subject)}</button>`).join('')}
+    </span>`).join('');
   $('subject-filters').querySelectorAll('[data-subject]').forEach((chip) => {
     chip.addEventListener('click', () => {
       const subject = chip.dataset.subject;
@@ -552,7 +724,7 @@ function renderPassMarks() {
 
   $('pass-marks').innerHTML = `
     <div class="minimos">
-      <span class="titulo">Nota mínima de aprovação</span>
+      <span class="titulo">${escapeHtml(t('results.pass_marks'))}</span>
       ${data.subjects.map((subject) => `
         <label>
           <span>${escapeHtml(subject)}</span>
@@ -560,7 +732,7 @@ function renderPassMarks() {
                  value="${marks[subject] ?? padrao}"
                  data-pass-mark="${escapeHtml(subject)}">
         </label>`).join('')}
-      <span class="nota">cada cadeira tem a sua — em branco usa ${padrao}</span>
+      <span class="nota">${escapeHtml(t('results.pass_marks_hint', { value: padrao }))}</span>
     </div>`;
 
   $('pass-marks').querySelectorAll('[data-pass-mark]').forEach((input) => {
@@ -569,7 +741,7 @@ function renderPassMarks() {
       const raw = input.value.trim();
       const value = raw === '' ? '' : parseFloat(raw);
       if (raw !== '' && Number.isNaN(value)) { input.value = proprias[subject] ?? padrao; return; }
-      busy(true, 'A aplicar…');
+      busy(true, t('busy.applying'));
       try {
         await postJSON('/api/answers', { settings: { subject_pass_marks: { [subject]: value } } });
         state.results = await api('/api/results');
@@ -581,6 +753,31 @@ function renderPassMarks() {
 
 const visibleSubjects = () =>
   (state.results?.subjects || []).filter((s) => !state.hiddenSubjects.has(s));
+
+const groupLabel = (grupo) => {
+  if (grupo.year != null && grupo.semester != null)
+    return t('group.year_semester', { year: grupo.year, semester: grupo.semester });
+  if (grupo.year != null) return t('group.year', { year: grupo.year });
+  if (grupo.semester != null) return t('group.semester', { semester: grupo.semester });
+  return t('group.none');
+};
+
+/* As cadeiras chegam já ordenadas por ano, semestre e nome: aqui só se juntam
+   as seguidas que pertencem ao mesmo ano e semestre. */
+function groupsOf(subjects) {
+  const curriculum = state.results?.curriculum || {};
+  const grupos = [];
+  for (const subject of subjects) {
+    const meta = curriculum[subject] || {};
+    const year = meta.year ?? null;
+    const semester = meta.semester ?? null;
+    const key = `${year}|${semester}`;
+    const ultimo = grupos[grupos.length - 1];
+    if (ultimo && ultimo.key === key) ultimo.subjects.push(subject);
+    else grupos.push({ key, year, semester, subjects: [subject] });
+  }
+  return grupos;
+}
 
 function filteredStudents() {
   const term = state.search.trim().toLowerCase();
@@ -599,26 +796,35 @@ function renderTable() {
   const subjects = visibleSubjects();
   const students = filteredStudents();
 
+  const grupos = groupsOf(subjects);
+  const temGrupos = grupos.some((g) => g.year != null || g.semester != null);
+  const linhaGrupos = temGrupos ? `
+    <tr class="group-row">
+      <th colspan="3"></th>
+      ${grupos.map((g) => `<th class="group" colspan="${g.subjects.length}">${
+        escapeHtml(groupLabel(g))}</th>`).join('')}
+      <th></th>
+    </tr>` : '';
+
   $('grades-head').innerHTML = `
-    <tr>
+    ${linhaGrupos}
+    <tr class="${temGrupos ? 'below-groups' : ''}">
       <th style="width:34px"></th>
-      <th style="width:96px">Nº</th>
-      <th>Aluno</th>
+      <th style="width:92px">${escapeHtml(t('results.col.id'))}</th>
+      <th class="who">${escapeHtml(t('results.col.student'))}</th>
       ${subjects.map((s) => `<th class="num">${escapeHtml(s)}</th>`).join('')}
-      <th class="num" style="width:90px">Média</th>
+      <th class="num" style="width:92px">${escapeHtml(t('results.col.average'))}</th>
     </tr>`;
 
   $('grades-body').innerHTML = students.map((student) => {
-    const cells = subjects.map((subject) => {
-      const data = student.subjects[subject];
-      return `<td class="num">${gradePill(data)}</td>`;
-    }).join('');
+    const cells = subjects.map((subject) =>
+      `<td class="num">${gradePill(student.subjects[subject])}</td>`).join('');
 
     const values = subjects
-      .map((s) => student.subjects[s]?.best?.value)
+      .map((s) => student.subjects[s]?.best_rounded)
       .filter((v) => typeof v === 'number');
     const average = values.length
-      ? (values.reduce((a, b) => a + b, 0) / values.length).toFixed(2).replace('.', ',')
+      ? num((values.reduce((a, b) => a + b, 0) / values.length).toFixed(2))
       : '—';
 
     const open = state.openRows.has(student.key);
@@ -626,17 +832,17 @@ function renderTable() {
       <tr class="${open ? 'is-open' : ''}" data-key="${escapeHtml(student.key)}">
         <td><input type="checkbox" data-select="${escapeHtml(student.key)}"
                    ${state.selected.has(student.key) ? 'checked' : ''}
-                   aria-label="Seleccionar ${escapeHtml(student.name)}"></td>
+                   aria-label="${escapeHtml(student.name)}"></td>
         <td class="student-id">${escapeHtml(student.student_id || '—')}</td>
         <td>
           <div class="name-cell">
             <button class="toggle" data-toggle="${escapeHtml(student.key)}"
-                    aria-label="Ver detalhe">▶</button>
+                    aria-label="${escapeHtml(t('results.detail'))}">▸</button>
             <span class="student-name">${escapeHtml(student.name)}</span>
           </div>
         </td>
         ${cells}
-        <td class="num">${average}</td>
+        <td class="num strong">${average}</td>
       </tr>
       ${open ? detailRow(student, subjects) : ''}`;
   }).join('');
@@ -665,11 +871,16 @@ function renderTable() {
 function gradePill(data) {
   if (!data || !data.best) return '<span class="grade-pill none">—</span>';
   const cls = data.approved === true ? 'pass' : data.approved === false ? 'fail' : 'none';
-  const epoca = data.best_epoca === 'epoca1' ? '1.ª'
-    : data.best_epoca === 'epoca2' ? '2.ª'
-    : data.best_epoca === 'especial' ? 'esp.' : '';
-  return `<span class="grade-pill ${cls}" title="${escapeHtml(data.best_epoca_label)}">
-    ${escapeHtml(data.best.label)}${epoca ? `<small>${epoca}</small>` : ''}</span>`;
+  const epoca = data.best_epoca === 'epoca1' ? '1'
+    : data.best_epoca === 'epoca2' ? '2'
+    : data.best_epoca === 'especial' ? 'E' : '';
+  // A nota que fica é a arredondada; a da pauta aparece na dica e no detalhe.
+  const nota = data.best_rounded != null ? String(data.best_rounded) : data.best.label;
+  const dica = data.best_rounded != null && data.best.label !== nota
+    ? `${data.best_epoca_label} · ${t('detail.rounded', { value: data.best.label })}`
+    : data.best_epoca_label;
+  return `<span class="grade-pill ${cls}" title="${escapeHtml(dica)}">
+    ${escapeHtml(nota)}${epoca ? `<small>${epoca}</small>` : ''}</span>`;
 }
 
 function detailRow(student, subjects) {
@@ -679,84 +890,88 @@ function detailRow(student, subjects) {
       const info = data.epocas[epoca.key];
       if (!info) return '';
       const best = data.best_epoca === epoca.key;
-      const components = Object.entries(info.components || {});
       return `
         <div class="epoca-line ${best ? 'is-best' : ''}">
           <span>${escapeHtml(epoca.label)}${
             info.route_label ? `<span class="via">${escapeHtml(info.route_label)}</span>` : ''}</span>
           <span>${escapeHtml(info.grade.label)}
-            ${best ? '<span class="tag">melhor</span>' : ''}</span>
-        </div>
-        ${components.length ? `<div class="components">${
-          components.map(([name, grade]) =>
-            `${escapeHtml(name)}: <b>${escapeHtml(grade.label)}</b>`).join(' · ')}</div>` : ''}`;
+            ${best ? `<span class="tag">${escapeHtml(t('detail.best_tag'))}</span>` : ''}</span>
+        </div>`;
     }).join('');
 
     const bestInfo = data.epocas[data.best_epoca] || {};
     return `
       <div class="detail-card">
         <h4>${escapeHtml(subject)}</h4>
-        ${lines || '<p class="components">Sem notas registadas.</p>'}
+        ${lines || `<p class="components">${escapeHtml(t('detail.no_grades'))}</p>`}
         <div class="source-note">
-          Nota final: <b>${escapeHtml(data.best?.label ?? '—')}</b>
-          ${data.best_rounded != null ? ` (arredondada: ${data.best_rounded})` : ''}
-          · mínima para passar: <b>${data.pass_mark}</b>
-          ${bestInfo.column ? `<br>Coluna: ${escapeHtml(bestInfo.column)}` : ''}
-          ${bestInfo.source_label ? `<br>Origem: ${escapeHtml(bestInfo.source_label)}` : ''}
-          ${(bestInfo.other_routes || []).length ? `<br>Outra via: ${
+          ${escapeHtml(t('detail.best'))}: <b>${escapeHtml(
+            data.best_rounded != null ? String(data.best_rounded) : (data.best?.label ?? '—'))}</b>
+          ${data.best_rounded != null && data.best.label !== String(data.best_rounded)
+            ? ` (${escapeHtml(t('detail.rounded', { value: data.best.label }))})` : ''}
+          · ${escapeHtml(t('detail.pass_mark'))}: <b>${data.pass_mark}</b>
+          ${bestInfo.column ? `<br>${escapeHtml(t('detail.column'))}: ${escapeHtml(bestInfo.column)}` : ''}
+          ${bestInfo.source_label ? `<br>${escapeHtml(t('detail.source'))}: ${escapeHtml(bestInfo.source_label)}` : ''}
+          ${(bestInfo.other_routes || []).length ? `<br>${escapeHtml(t('detail.other_route'))}: ${
             bestInfo.other_routes.map((a) =>
               escapeHtml(`${a.route || a.column}: ${a.label}`)).join(' · ')}` : ''}
-          ${(bestInfo.other_versions || []).length ? `<br>Noutros ficheiros: ${
+          ${(bestInfo.other_versions || []).length ? `<br>${escapeHtml(t('detail.other_files'))}: ${
             bestInfo.other_versions.map((a) =>
               escapeHtml(`${a.label} (${a.source})`)).join(' · ')}` : ''}
         </div>
       </div>`;
   }).join('');
 
-  const medias = mediasCard(student);
   const alternates = student.all_names.length > 1 || student.all_ids.length > 1 ? `
     <div class="detail-card">
-      <h4>Identificação</h4>
+      <h4>${escapeHtml(t('detail.identity'))}</h4>
       <div class="components">
-        Nomes: <b>${escapeHtml(student.all_names.join(' · ') || '—')}</b><br>
-        Números: <b>${escapeHtml(student.all_ids.join(' · ') || '—')}</b>
+        ${escapeHtml(t('detail.names'))}: <b>${escapeHtml(student.all_names.join(' · ') || '—')}</b><br>
+        ${escapeHtml(t('detail.ids'))}: <b>${escapeHtml(student.all_ids.join(' · ') || '—')}</b>
       </div>
     </div>` : '';
 
   return `<tr class="detail-row"><td colspan="${subjects.length + 4}">
-    <div class="detail-inner">${medias}${cards}${alternates}</div></td></tr>`;
+    <div class="detail-inner">${mediasCard(student)}${cards}${alternates}</div></td></tr>`;
 }
 
 function mediasCard(student) {
   const media = student.averages;
   if (!media || (!media.final && !media.semesters.length)) return '';
 
-  const num = (valor) => String(valor).replace('.', ',');
   const linha = (rotulo, entrada) => `
-    <div class="item">${escapeHtml(rotulo)}: <b>${num(entrada.value)}</b>
-      <span class="components">(${entrada.count} UC${entrada.count === 1 ? '' : 's'}${
-        entrada.weighted ? `, ${num(entrada.ects)} ECTS` : ''})</span></div>`;
+    <div class="item"><span>${escapeHtml(rotulo)}</span>
+      <b>${num(entrada.value)}</b>
+      <span class="components">${escapeHtml(t('medias.count', {
+        n: entrada.count,
+        ects: entrada.weighted ? t('medias.ects', { value: num(entrada.ects) }) : '',
+      }))}</span></div>`;
 
   const semestres = media.semesters.map((s) =>
-    linha(`${s.year}.º ano · ${s.semester}.º sem.`, s)).join('');
-  const anos = media.years.map((a) => linha(`${a.year}.º ano`, a)).join('');
+    linha(t('medias.semester', { year: s.year, semester: s.semester }), s)).join('');
+  const anos = media.years.map((a) => linha(t('medias.year', { year: a.year }), a)).join('');
+  const cobertura = media.coverage || {};
 
   return `
-    <div class="detail-card">
-      <h4>Médias</h4>
+    <div class="detail-card medias-card">
+      <h4>${escapeHtml(t('medias.title'))}</h4>
       <div class="medias">
         ${semestres}${anos}
-        ${media.final ? `<div class="item final">Média de curso:
-          <b>${num(media.final.value)}</b> (arredondada: ${media.final.rounded})</div>` : ''}
+        ${media.final ? `<div class="item final"><span>${escapeHtml(t('medias.final'))}</span>
+          <b>${num(media.final.value)}</b>
+          <span class="components">(${escapeHtml(t('medias.rounded', { value: media.final.rounded }))})</span></div>` : ''}
       </div>
       <div class="source-note">
-        Contam as cadeiras aprovadas com nota numérica.
+        ${media.course ? `<b>${escapeHtml(t('medias.course', { name: media.course }))}</b><br>` : ''}
+        ${cobertura.total ? escapeHtml(t('medias.coverage', {
+          have: cobertura.have, total: cobertura.total })) : ''}
+        ${(cobertura.missing || []).length
+          ? `<br>${escapeHtml(t('medias.coverage_missing', { list: cobertura.missing.join(' · ') }))}` : ''}
+        <br>${escapeHtml(t('medias.note'))}
         ${media.final && media.final.weighted
-          ? 'Ponderadas por ECTS.'
-          : 'Média simples — preencha os ECTS de todas as cadeiras para ponderar.'}
-        ${media.missing_curriculum.length
-          ? `<br>Sem ano/semestre, por isso fora das médias parciais: ${
-              media.missing_curriculum.map(escapeHtml).join(' · ')}` : ''}
+          ? escapeHtml(t('medias.weighted')) : escapeHtml(t('medias.simple'))}
+        ${(media.missing_curriculum || []).length
+          ? `<br>${escapeHtml(t('medias.missing', { list: media.missing_curriculum.join(' · ') }))}` : ''}
       </div>
     </div>`;
 }
@@ -767,21 +982,21 @@ function renderNotices() {
   if (!entries.length) {
     $('notices').innerHTML = `
       <div class="notice info"><span class="icon">✓</span>
-      <span>Nenhum conflito: os ficheiros encaixaram todos sem ambiguidades.</span></div>`;
+      <span>${escapeHtml(t('notices.none'))}</span></div>`;
     return;
   }
   $('notices').innerHTML = `
     <details class="notice-group">
-      <summary>${entries.length} aviso(s) e conflito(s) — vale a pena espreitar</summary>
+      <summary>${escapeHtml(t('notices.title', { n: entries.length }))}</summary>
       <div>${entries.map((entry) => `
         <div class="notice ${entry.severity === 'warning' ? 'warning' : 'info'}">
-          <span class="icon">${entry.severity === 'warning' ? '⚠' : 'ℹ'}</span>
+          <span class="icon">${entry.severity === 'warning' ? '!' : 'i'}</span>
           <span>
-            <b>${escapeHtml(entry.student || entry.type)}${
+            <b>${escapeHtml(entry.student || entry.type_label || entry.type)}${
               entry.subject ? ' — ' + escapeHtml(entry.subject) : ''}${
               entry.epoca ? ' (' + escapeHtml(entry.epoca) + ')' : ''}</b>
             ${escapeHtml(entry.detail)}
-            ${entry.chosen ? `<br><small>Foi usado: <b>${escapeHtml(entry.chosen)}</b></small>` : ''}
+            ${entry.chosen ? `<br><small>${escapeHtml(t('notices.chosen'))} <b>${escapeHtml(entry.chosen)}</b></small>` : ''}
           </span>
         </div>`).join('')}</div>
     </details>`;
@@ -791,12 +1006,13 @@ function renderNotices() {
 
 async function exportExcel() {
   const students = state.selected.size ? [...state.selected] : null;
-  busy(true, 'A criar o Excel…');
+  const filename = t('excel.filename');
+  busy(true, t('busy.excel'));
   try {
     const response = await fetch('/api/export', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ students, subjects: visibleSubjects() }),
+      body: JSON.stringify({ students, subjects: visibleSubjects(), filename }),
     });
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
@@ -806,19 +1022,29 @@ async function exportExcel() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = 'notas-consolidadas.xlsx';
+    link.download = filename;
     document.body.appendChild(link);
     link.click();
     link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 4000);
-    toast(students ? `Excel criado com ${students.length} aluno(s).` : 'Excel criado.');
+    toast(students ? t('toast.excel_students', { n: students.length }) : t('toast.excel'));
   } catch (error) { toast(error.message, true); } finally { busy(false); }
 }
 
 /* ------------------------------------------------------------- arranque */
 
 function setup() {
+  let saved = null;
+  try { saved = localStorage.getItem('gradeorg.lang'); } catch (error) { /* privado */ }
+  setLanguage(saved || 'pt');
+  paintLanguage();
+  applyStaticText();
+
   setupDropzone();
+
+  document.querySelectorAll('#lang button').forEach((button) => {
+    button.addEventListener('click', () => switchLanguage(button.dataset.lang));
+  });
 
   document.querySelectorAll('.step').forEach((button) => {
     button.addEventListener('click', () => {
@@ -837,7 +1063,8 @@ function setup() {
   $('btn-export').addEventListener('click', exportExcel);
 
   $('btn-reset').addEventListener('click', async () => {
-    busy(true, 'A limpar…');
+    if (!window.confirm(t('memory.confirm'))) return;
+    busy(true, t('busy.clearing'));
     try {
       state.review = await postJSON('/api/reset');
       state.results = null;
@@ -878,8 +1105,16 @@ function setup() {
   $('merge-by-name').addEventListener('change', (event) =>
     saveSettings({ merge_by_name: event.target.checked }));
 
+  // A sessão anterior é retomada tal como ficou -- língua incluída, porque
+  // quem manda é o que ficou guardado no servidor.
   api('/api/state').then((data) => {
     state.review = data;
+    if (data.language && data.language !== LANG) {
+      setLanguage(data.language);
+      try { localStorage.setItem('gradeorg.lang', data.language); } catch (e) { /* privado */ }
+      paintLanguage();
+      applyStaticText();
+    }
     renderFiles();
     refreshStepAvailability();
     if (data.files.length) { renderReview(); goto('review'); }

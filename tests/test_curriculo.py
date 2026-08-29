@@ -125,7 +125,10 @@ def test_pauta_de_um_teste_nao_compete_com_a_pauta_da_epoca():
     uc = next(iter(aluno["subjects"].values()))
     assert uc["best"].label == "11"
     assert not [c for c in resultado["conflicts"] if c["type"] == "nota"]
-    assert "Teste 1 (30%)" in uc["epocas"]["epoca1"]["components"]
+    # A pauta do teste nao traz nota final nenhuma: fica de fora, mas avisa.
+    assert uc["epocas"]["epoca1"]["source_label"] == "SGR_Epoca1.pdf"
+    avisos = [w for w in resultado["warnings"] if w["type"] == "pauta sem nota final"]
+    assert len(avisos) == 1 and "Teste 1" in str(avisos[0]["detail"])
 
 
 # -- médias ----------------------------------------------------------------
