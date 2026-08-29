@@ -676,13 +676,15 @@ function renderResults() {
   const data = state.results;
   if (!data) return;
 
+  // Aprovações e reprovações só dizem alguma coisa por cadeira: somadas entre
+  // UCs não são a leitura de nada. Aqui em cima ficam os números que valem
+  // somados; o resto está nos cartões de cada UC, logo abaixo.
   const stats = data.stats;
   $('stats').innerHTML = `
     <div class="stat"><div class="value">${stats.students}</div><div class="label">${escapeHtml(t('stats.students'))}</div></div>
     <div class="stat"><div class="value">${stats.subjects}</div><div class="label">${escapeHtml(t('stats.subjects'))}</div></div>
-    <div class="stat green"><div class="value">${stats.approved}</div><div class="label">${escapeHtml(t('stats.approved'))}</div></div>
-    <div class="stat red"><div class="value">${stats.failed}</div><div class="label">${escapeHtml(t('stats.failed'))}</div></div>
-    <div class="stat"><div class="value">${stats.average ?? '—'}</div><div class="label">${escapeHtml(t('stats.average'))}</div></div>`;
+    <div class="stat"><div class="value">${stats.approved + stats.failed + stats.pending}</div><div class="label">${escapeHtml(t('stats.notes'))}</div></div>
+    <div class="stat"><div class="value">${num(stats.average ?? '—')}</div><div class="label">${escapeHtml(t('stats.average'))}</div></div>`;
 
   $('pending-warning').innerHTML = (data.questions || []).length ? `
     <div class="notice warning">
@@ -693,25 +695,67 @@ function renderResults() {
 
   renderPassMarks();
 
+  renderSubjectCards();
+  renderTable();
+  renderNotices();
+}
+
+/* Um cartão por unidade curricular: a média e quantos passaram, que é onde
+   estas contas querem dizer alguma coisa. O cartão é também o filtro da
+   coluna, para a informação não custar uma linha a mais na página. */
+function renderSubjectCards() {
+  const data = state.results;
+  const stats = data.subject_stats || {};
+
   $('subject-filters').innerHTML = groupsOf(data.subjects).map((grupo) => `
-    <span class="chip-group">
+    <div class="uc-group">
       ${grupo.year != null || grupo.semester != null
         ? `<span class="chip-group-label">${escapeHtml(groupLabel(grupo))}</span>` : ''}
-      ${grupo.subjects.map((subject) => `
-        <button class="chip ${state.hiddenSubjects.has(subject) ? '' : 'is-on'}"
-                data-subject="${escapeHtml(subject)}">${escapeHtml(subject)}</button>`).join('')}
-    </span>`).join('');
-  $('subject-filters').querySelectorAll('[data-subject]').forEach((chip) => {
-    chip.addEventListener('click', () => {
-      const subject = chip.dataset.subject;
+      <div class="uc-group-cards">
+        ${grupo.subjects.map((subject) => subjectCard(subject, stats[subject])).join('')}
+      </div>
+    </div>`).join('');
+
+  $('subject-filters').querySelectorAll('[data-subject]').forEach((card) => {
+    card.addEventListener('click', () => {
+      const subject = card.dataset.subject;
       if (state.hiddenSubjects.has(subject)) state.hiddenSubjects.delete(subject);
       else state.hiddenSubjects.add(subject);
       renderResults();
     });
   });
+}
 
-  renderTable();
-  renderNotices();
+function subjectCard(subject, stat) {
+  const ligada = !state.hiddenSubjects.has(subject);
+  const conta = stat || { students: 0, approved: 0, failed: 0, pending: 0, average: null };
+  const total = Math.max(conta.students, 1);
+  const avaliados = conta.approved + conta.failed;
+  const barra = [
+    ['ok', conta.approved], ['ko', conta.failed], ['none', conta.pending],
+  ].filter(([, n]) => n > 0)
+    .map(([classe, n]) => `<i class="${classe}" style="width:${(n / total * 100).toFixed(1)}%"
+      ></i>`).join('');
+
+  const dica = conta.students
+    ? t('uc.card.tooltip', {
+        approved: conta.approved, failed: conta.failed, pending: conta.pending,
+        average: conta.average != null ? num(conta.average) : '—',
+      })
+    : t(ligada ? 'uc.card.shown' : 'uc.card.hidden');
+
+  return `
+    <button class="uc-card ${ligada ? 'is-on' : ''}" data-subject="${escapeHtml(subject)}"
+            title="${escapeHtml(dica)}">
+      <span class="nome">${escapeHtml(subject)}</span>
+      <span class="linha">
+        <b class="media">${conta.average != null ? num(conta.average) : '—'}</b>
+        <span class="barra">${barra}</span>
+        <span class="contas">${avaliados
+          ? escapeHtml(t('uc.card.counts', { approved: conta.approved, assessed: avaliados }))
+          : escapeHtml(t('uc.card.empty'))}</span>
+      </span>
+    </button>`;
 }
 
 function renderPassMarks() {

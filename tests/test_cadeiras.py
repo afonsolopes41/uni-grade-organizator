@@ -290,3 +290,56 @@ def test_o_resultado_traz_as_cadeiras_agrupadas():
     resultado = session.result()
     assert resultado["subjects"] == ["Algebra", "Redes"]
     assert [g["year"] for g in resultado["subject_groups"]] == [1, 2]
+
+
+# -- contas por cadeira -----------------------------------------------------
+
+def test_aprovacoes_e_media_sao_por_cadeira():
+    """Somadas entre UCs não dizem nada; por cadeira são a leitura certa."""
+    redes = fonte("s1", "Redes.csv", ["Segurança e Gestão de Redes"],
+                  [["Número", "Nome", "Nota Final"],
+                   ["1", "Ana Maria Silva", "15"],
+                   ["2", "Rui Costa Lopes", "8"],
+                   ["3", "Ines Santos Dias", ""]])
+    algebra = fonte("s2", "Algebra.csv", ["Álgebra Linear"],
+                    [["Número", "Nome", "Nota Final"],
+                     ["1", "Ana Maria Silva", "14"],
+                     ["4", "Joao Pedro Nunes", "12"]], order=2)
+
+    stats = consolidate([redes, algebra], Settings())["subject_stats"]
+    assert stats["Segurança e Gestão de Redes"] == {
+        "students": 3, "approved": 1, "failed": 1, "pending": 1,
+        "average": 11.5, "pass_rate": 0.5,
+    }
+    # O João não faz Redes: não conta como reprovado numa cadeira que não fez.
+    assert stats["Álgebra Linear"]["students"] == 2
+    assert stats["Álgebra Linear"]["approved"] == 2
+    assert stats["Álgebra Linear"]["average"] == 13.0
+
+
+def test_quem_esta_na_pauta_sem_nota_conta_como_sem_nota():
+    src = fonte("s1", "pauta.csv", ["Óptica"],
+                [["Número", "Nome", "Nota Final"],
+                 ["1", "Ana Maria Silva", "15"],
+                 ["2", "Rui Costa Lopes", ""],
+                 ["3", "Ines Santos Dias", ""]])
+    stats = consolidate([src], Settings())["subject_stats"]["Óptica"]
+    assert (stats["approved"], stats["failed"], stats["pending"]) == (1, 0, 2)
+    assert stats["students"] == 3
+
+
+def test_a_media_da_cadeira_usa_a_nota_final_arredondada():
+    src = fonte("s1", "pauta.csv", ["Óptica"],
+                [["Número", "Nome", "Nota Final"],
+                 ["1", "Ana Maria Silva", "13,4"],
+                 ["2", "Rui Costa Lopes", "13,5"]])
+    # 13 e 14, não 13,45.
+    assert consolidate([src], Settings())["subject_stats"]["Óptica"]["average"] == 13.5
+
+
+def test_cadeira_sem_alunos_nenhuns_nao_rebenta():
+    session = Session()
+    session.create_subject("Física Geral")
+    stats = session.raw_result()["subject_stats"]["Física Geral"]
+    assert stats == {"students": 0, "approved": 0, "failed": 0, "pending": 0,
+                     "average": None, "pass_rate": None}

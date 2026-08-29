@@ -529,22 +529,62 @@ input[type="number"] { width: 82px; text-align: center; font-variant-numeric: ta
 .search svg { position: absolute; left: 11px; color: var(--muted); }
 .search input { width: 100%; padding-left: 32px; }
 
-.filters { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; }
-.chip-group { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.filters { display: flex; flex-wrap: wrap; gap: 12px 18px; align-items: flex-start; }
+.uc-group { display: flex; flex-direction: column; gap: 5px; }
+.uc-group-cards { display: flex; flex-wrap: wrap; gap: 8px; }
 .chip-group-label {
   font-size: 10.5px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase;
   color: var(--muted);
+  padding-left: 2px;
 }
-.chip {
-  padding: 4px 12px;
+
+/* Cada UC num cartão: a média e quantos passaram, e um clique esconde a
+   coluna. A informação por cadeira não custa uma linha a mais na página. */
+.uc-card {
+  display: flex; flex-direction: column; gap: 5px;
+  min-width: 168px; max-width: 260px;
+  padding: 9px 12px 10px;
+  text-align: left;
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   background: var(--surface);
-  color: var(--muted);
-  font-size: 12.5px;
   cursor: pointer;
+  opacity: .5;
+  transition: opacity .15s, border-color .15s, box-shadow .15s;
 }
-.chip.is-on { background: var(--accent-bg); border-color: transparent; color: var(--accent); font-weight: 600; }
+.uc-card.is-on { opacity: 1; box-shadow: var(--shadow); }
+.uc-card:hover { border-color: var(--muted); }
+.uc-card .nome {
+  font-size: 12.5px; font-weight: 600;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  max-width: 100%;
+}
+.uc-card .linha { display: flex; align-items: center; gap: 8px; }
+.uc-card .media {
+  font-family: var(--serif); font-size: 17px; line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+  min-width: 34px;
+}
+.uc-card.is-on .media { color: var(--accent); }
+.uc-card .barra {
+  flex: 1;
+  display: flex;
+  height: 5px;
+  min-width: 34px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--line-soft);
+}
+.uc-card .barra i { display: block; height: 100%; }
+.uc-card .barra .ok { background: var(--green); }
+.uc-card .barra .ko { background: var(--red); }
+.uc-card .barra .none { background: var(--line); }
+.uc-card .contas {
+  font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 
 .table-wrap {
   overflow-x: auto;

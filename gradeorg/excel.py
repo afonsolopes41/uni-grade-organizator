@@ -347,9 +347,51 @@ def _build_summary(sheet: Worksheet, students: list, subjects: list,
     sheet.freeze_panes = sheet.cell(row=first_data, column=3)
 
     if students and subjects:
-        _distribution_block(sheet, last_data + 3, subjects, subject_sheets,
+        _subject_footer(sheet, first_data, last_data, subjects, pass_refs, lang)
+        _distribution_block(sheet, last_data + 5, subjects, subject_sheets,
                             subject_extent, lang)
     return first_data
+
+
+def _subject_footer(sheet: Worksheet, first_data: int, last_data: int,
+                    subjects: list, pass_refs: dict,
+                    lang: str = DEFAULT_LANGUAGE) -> None:
+    """Media e aprovados de cada UC, por baixo da coluna dela.
+
+    Somadas entre cadeiras estas contas nao dizem nada; debaixo da coluna de
+    cada uma dizem tudo. Sao formulas -- corrigir uma nota actualiza-as -- e
+    seguem a nota minima dessa UC, nao um valor global.
+    """
+    linha_media = last_data + 1
+    linha_aprovados = last_data + 2
+
+    for row, chave in ((linha_media, "xl.summary.uc_average"),
+                       (linha_aprovados, "xl.summary.uc_approved")):
+        etiqueta = sheet.cell(row=row, column=2, value=tr(chave, lang))
+        etiqueta.font = Font(name=FONT, size=9.5, bold=True, color=INK)
+        etiqueta.alignment = Alignment(horizontal="right", vertical="center", indent=1)
+
+    for index, subject in enumerate(subjects):
+        letter = get_column_letter(3 + index)
+        intervalo = f"{letter}{first_data}:{letter}{last_data}"
+
+        media = sheet.cell(row=linha_media, column=3 + index,
+                           value=f'=IFERROR(ROUND(AVERAGE({intervalo}),2),"—")')
+        media.number_format = "0.00"
+        media.font = Font(name=FONT, size=10, bold=True, color=INK)
+        media.alignment = Alignment(horizontal="center", vertical="center")
+
+        referencia = pass_refs.get(subject)
+        aprovados = sheet.cell(row=linha_aprovados, column=3 + index)
+        aprovados.value = (f'=COUNTIF({intervalo},">="&{referencia})&"/"&'
+                           f'COUNT({intervalo})' if referencia
+                           else f"=COUNT({intervalo})")
+        aprovados.font = Font(name=FONT, size=9.5, color=MUTED)
+        aprovados.alignment = Alignment(horizontal="center", vertical="center")
+
+    borda = Side(style="thin", color=INK_SOFT)
+    for column in range(2, 3 + len(subjects)):
+        sheet.cell(row=linha_media, column=column).border = Border(top=borda)
 
 
 def _distribution_block(sheet: Worksheet, row: int, subjects: list,
