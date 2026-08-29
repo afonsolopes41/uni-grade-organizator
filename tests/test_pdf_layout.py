@@ -8,7 +8,7 @@ from gradeorg.models import RawTable
 from gradeorg.parsers.pdf import (
     _column_boundaries, _drop_straddled_boundaries, _group_into_lines,
     _header_band, _is_laid_out_in_columns, _looks_like_record, _merge_header,
-    _score_table, _split_line, _text_segments,
+    _score_table, _split_id_from_name, _split_line, _text_segments, _value_spans,
 )
 
 
@@ -146,9 +146,10 @@ def test_cabecalho_de_varias_linhas_junta_se_por_coluna():
         line(word("Number", 48, 95), word("Name", 76, 95)),
         line(word("30%", 349, 101), word("9%", 408, 101)),
     ] + body
-    band = _header_band(lines, 3, boundaries)
+    spans = _value_spans(body, boundaries)
+    band = _header_band(lines, 3, boundaries, spans)
     assert band == [0, 1, 2]
-    header = _merge_header([lines[i] for i in band], boundaries)
+    header = _merge_header([lines[i] for i in band], boundaries, spans)
     assert header == ["Number", "Name", "Test 1 30%", "Max1 9%"]
 
 
@@ -164,7 +165,7 @@ def test_o_titulo_nao_entra_no_cabecalho():
                   word("Monday,", 102, 80, width=23), word("Jun", 127, 80, width=10))
     cabecalho = line(word("Number", 48, 95), word("Name", 76, 95), word("Grade", 345, 95))
     lines = [titulo, cabecalho] + body
-    assert _header_band(lines, 2, boundaries) == [1]
+    assert _header_band(lines, 2, boundaries, _value_spans(body, boundaries)) == [1]
 
 
 # -- texto solto -----------------------------------------------------------
@@ -189,3 +190,88 @@ def test_ganha_a_tabela_mais_cheia():
                                 ["Ana Silva", "", "14", ""],
                                 ["Rui Costa", "", "12", ""]])
     assert _score_table(cheia) > _score_table(esburacada)
+
+
+# -- número e nome colados na mesma coluna ---------------------------------
+
+def test_numero_e_nome_colados_separam_se_em_duas_colunas():
+    """O número fica a quatro pontos do nome — menos do que separa colunas.
+
+    Sem outro sinal, a reconstrução juntava os dois. Aqui há um sinal mais
+    forte do que a distância: à esquerda números de aluno, à direita nomes.
+    """
+    body = [
+        line(word("110641", 66, 110, width=34), word("Afonso", 104, 110, width=31),
+             word("Maia", 137, 110, width=21), word("13,0", 583, 110, width=20)),
+        line(word("122631", 66, 120, width=34), word("Afonso", 104, 120, width=31),
+             word("Lopes", 137, 120, width=26), word("13,2", 583, 120, width=20)),
+        line(word("122657", 66, 130, width=34), word("Alexandre", 104, 130, width=44),
+             word("Duarte", 150, 130, width=30), word("14,1", 583, 130, width=20)),
+    ]
+    boundaries = _column_boundaries(body)
+    assert len(boundaries) - 1 == 2          # número e nome ainda juntos
+
+    boundaries = _split_id_from_name(body, boundaries)
+    assert len(boundaries) - 1 == 3
+    assert _split_line(body[0], boundaries) == ["110641", "Afonso Maia", "13,0"]
+
+
+def test_nao_parte_uma_coluna_de_nomes_sem_numero():
+    body = [
+        line(word("Afonso", 104, 110, width=31), word("Maia", 137, 110, width=21),
+             word("13,0", 583, 110, width=20)),
+        line(word("Alexandre", 104, 120, width=44), word("Duarte", 150, 120, width=30),
+             word("14,1", 583, 120, width=20)),
+    ]
+    boundaries = _column_boundaries(body)
+    assert _split_id_from_name(body, boundaries) == boundaries
+
+
+# -- etiquetas de cabeçalho longe dos seus valores -------------------------
+
+def test_etiqueta_do_exame_nao_junta_a_coluna_da_nota_final():
+    """«Exame» começa à esquerda dos seus valores e cruza o vazio.
+
+    Cruzar o vazio entre duas colunas não basta para as juntar: a etiqueta tem
+    de chegar aos valores das duas, e esta não chega perto da «Nota final».
+    """
+    body = [
+        line(word("Afonso", 104, 110, width=31), word("13,0", 583, 110, width=20)),
+        line(word("Rui", 104, 120, width=16), word("5,9", 640, 120, width=14)),
+        line(word("Ana", 104, 130, width=18), word("13,2", 583, 130, width=20)),
+        line(word("Ines", 104, 140, width=20), word("2,3", 640, 140, width=14)),
+    ]
+    boundaries = _column_boundaries(body)
+    cabecalho = [line(word("Aluno", 104, 95, width=27), word("Nota", 557, 95, width=23),
+                      word("final", 582, 95, width=21), word("Exame", 616, 95, width=30))]
+    assert _drop_straddled_boundaries(boundaries, cabecalho, body) == boundaries
+
+
+def test_etiqueta_a_esquerda_dos_valores_vai_para_a_coluna_certa():
+    """Numa coluna de números alinhados à direita, a etiqueta começa bem antes."""
+    body = [
+        line(word("Afonso", 104, 110, width=31), word("10,25", 424, 110, width=26),
+             word("13,80", 476, 110, width=25)),
+        line(word("Alexandre", 104, 120, width=44), word("13,50", 424, 120, width=26),
+             word("11,47", 476, 120, width=25)),
+    ]
+    boundaries = _column_boundaries(body)
+    spans = _value_spans(body, boundaries)
+    cabecalho = line(word("Aluno", 104, 95, width=27), word("Teste", 361, 95, width=25),
+                     word("intercalar", 389, 95, width=44), word("2º", 460, 95, width=10),
+                     word("teste", 473, 95, width=23))
+    assert _merge_header([cabecalho], boundaries, spans) == [
+        "Aluno", "Teste intercalar", "2º teste"]
+
+
+def test_etiqueta_de_uma_coluna_sem_valores_nao_rouba_o_nome_a_vizinha():
+    """«Exame recurso» sem uma única nota: a coluna não existe nos dados."""
+    body = [
+        line(word("Afonso", 104, 110, width=31), word("5,9", 640, 110, width=14)),
+        line(word("Ana", 104, 120, width=18), word("2,3", 640, 120, width=14)),
+    ]
+    boundaries = _column_boundaries(body)
+    spans = _value_spans(body, boundaries)
+    cabecalho = line(word("Aluno", 104, 95, width=27), word("Exame", 616, 95, width=30),
+                     word("Exame", 659, 95, width=30), word("recurso", 692, 95, width=34))
+    assert _merge_header([cabecalho], boundaries, spans) == ["Aluno", "Exame"]

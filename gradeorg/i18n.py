@@ -72,6 +72,8 @@ CATALOG = {
         "reason.name_by_text": "coluna com mais texto parecido com nomes",
         "reason.other_id_column": "outra coluna foi escolhida como número de aluno",
         "reason.shared_component": "componente comum a todas as épocas",
+        "reason.exam_route":
+            "coluna do exame, preenchida só para quem não tem nota final",
         "reason.last_of_block": "última coluna do bloco (palpite)",
         "reason.other_final_chosen": "«{header}» foi escolhida como nota final",
         "reason.alt_route": "{reason} (via alternativa desta época)",
@@ -309,6 +311,8 @@ CATALOG = {
         "reason.name_by_text": "the column with the most name-like text",
         "reason.other_id_column": "another column was picked as the student number",
         "reason.shared_component": "component shared by every season",
+        "reason.exam_route":
+            "the exam column, filled only for those with no final grade",
         "reason.last_of_block": "last column of the block (a guess)",
         "reason.other_final_chosen": "«{header}» was picked as the final grade",
         "reason.alt_route": "{reason} (alternative route for this season)",

@@ -39,6 +39,17 @@ _SEGMENT_GAP = 22.0
 _MAX_HEADER_WORDS = 4
 #: Intervalo que separa duas colunas numa linha de cabecalho.
 _HEADER_GAP = 7.0
+#: Intervalo que separa duas etiquetas de cabecalho ("Nota final" e "Exame").
+#: As palavras dentro da mesma etiqueta ficam a dois ou tres pontos.
+_LABEL_GAP = 6.0
+#: Folga com que uma palavra do cabecalho ainda se considera encostada aos
+#: valores de uma coluna. "Grade" acaba meio ponto antes dos numeros que
+#: encima -- e continua a ser o cabecalho deles.
+_LABEL_TOUCH = 3.0
+#: Espaco minimo entre o numero de aluno e o nome para os separar em duas
+#: colunas. Mais curto do que o _COLUMN_GAP normal porque aqui ha outro sinal a
+#: confirmar: os valores da esquerda sao numeros de aluno e os da direita nomes.
+_ID_NAME_GAP = 1.5
 #: Abaixo desta sobreposicao, duas metades sob a mesma palavra de cabecalho sao
 #: a mesma coluna.
 _SAME_COLUMN_OVERLAP = 0.25
@@ -143,14 +154,17 @@ def _table_from_words(page, page_no: int) -> Optional[RawTable]:
     boundaries = _column_boundaries(body)
     if len(boundaries) < 3:
         return None
+    boundaries = _split_id_from_name(body, boundaries)
 
     # O cabecalho serve de fiel: uma palavra que atravesse um limite prova que
     # esse limite nao existe (ver _drop_straddled_boundaries).
-    header_indices = _header_band(lines, body_indices[0], boundaries)
+    spans = _value_spans(body, boundaries)
+    header_indices = _header_band(lines, body_indices[0], boundaries, spans)
     boundaries = _drop_straddled_boundaries(
         boundaries, [lines[i] for i in header_indices], body)
-    header_indices = _header_band(lines, body_indices[0], boundaries)
-    header = _merge_header([lines[i] for i in header_indices], boundaries)
+    spans = _value_spans(body, boundaries)
+    header_indices = _header_band(lines, body_indices[0], boundaries, spans)
+    header = _merge_header([lines[i] for i in header_indices], boundaries, spans)
 
     rows = [header] if any(header) else []
     rows += [_split_line(line, boundaries) for line in body]
@@ -285,6 +299,57 @@ def _column_boundaries(body: list) -> list:
     return boundaries
 
 
+def _split_id_from_name(body: list, boundaries: list) -> list:
+    """Separa o numero de aluno do nome quando estao colados na mesma coluna.
+
+    Ha pautas em que o numero fica a quatro pontos do nome -- menos do que o
+    espaco que separa duas colunas -- e a reconstrucao junta os dois. Aqui ha um
+    sinal mais forte do que a distancia: a esquerda estao numeros de aluno, a
+    direita nomes de pessoa, e o corte e sempre no mesmo sitio.
+    """
+    for index in range(len(boundaries) - 1):
+        esquerda, direita = boundaries[index], boundaries[index + 1]
+        fim_do_numero, inicio_do_nome, linhas = -1e9, 1e9, 0
+        for line in body:
+            palavras = [w for w in line
+                        if esquerda <= (w["x0"] + w["x1"]) / 2 < direita]
+            if len(palavras) < 2 or not parse_student_id(palavras[0]["text"]):
+                continue
+            resto = " ".join(w["text"] for w in palavras[1:])
+            if parse_student_id(resto) or not looks_like_person_name(resto):
+                continue
+            fim_do_numero = max(fim_do_numero, palavras[0]["x1"])
+            inicio_do_nome = min(inicio_do_nome, palavras[1]["x0"])
+            linhas += 1
+
+        if linhas < max(2, len(body) * 0.6):
+            continue
+        if inicio_do_nome - fim_do_numero < _ID_NAME_GAP:
+            # Numeros e nomes trocados em altura: nao ha corte limpo.
+            continue
+        corte = (fim_do_numero + inicio_do_nome) / 2
+        if esquerda < corte < direita:
+            return sorted(boundaries + [corte])
+    return boundaries
+
+
+def _value_spans(body: list, boundaries: list) -> list:
+    """Onde e que cada coluna tem mesmo valores, em x.
+
+    E contra este intervalo que se encostam as etiquetas do cabecalho: numa
+    coluna de numeros alinhados a direita, a etiqueta comeca muito mais a
+    esquerda do que os valores, e so a sobreposicao a atribui bem.
+    """
+    spans: list = [None] * max(len(boundaries) - 1, 1)
+    for line in body:
+        for word in line:
+            index = _column_of(word["x0"], word["x1"], boundaries)
+            atual = spans[index]
+            spans[index] = ((word["x0"], word["x1"]) if atual is None
+                            else (min(atual[0], word["x0"]), max(atual[1], word["x1"])))
+    return spans
+
+
 def _drop_straddled_boundaries(boundaries: list, header_lines: list,
                                body: list) -> list:
     """Junta duas metades de uma coluna que o calculo dos vazios separou.
@@ -293,7 +358,10 @@ def _drop_straddled_boundaries(boundaries: list, header_lines: list,
     largo nao chegam a sobrepor-se em x, e o intervalo vazio entre eles parte a
     coluna em duas. Sao precisos dois sinais para desfazer a separacao:
 
-    1. uma palavra do cabecalho ("Test") passa por cima das duas metades, e
+    1. uma palavra do cabecalho ("Test") chega aos valores das duas metades --
+       nao basta cruzar o vazio entre elas, senao uma etiqueta que comeca bem a
+       esquerda dos seus proprios valores ("Exame", encostado a coluna
+       anterior) juntava duas colunas a serio; e
     2. quase nenhum aluno tem valor nas duas metades ao mesmo tempo.
 
     O segundo sinal e o que impede juntar colunas a serio: "Nota Final" e
@@ -305,7 +373,8 @@ def _drop_straddled_boundaries(boundaries: list, header_lines: list,
     if len(boundaries) <= 3 or not header_lines or not body:
         return boundaries
 
-    spans = [(w["x0"], w["x1"]) for line in header_lines for w in line]
+    words = [(w["x0"], w["x1"]) for line in header_lines for w in line]
+    values = _value_spans(body, boundaries)
     occupied = [set() for _ in range(len(boundaries) - 1)]
     for row_index, line in enumerate(body):
         for word in line:
@@ -314,7 +383,14 @@ def _drop_straddled_boundaries(boundaries: list, header_lines: list,
     drop = set()
     for index in range(1, len(boundaries) - 1):
         boundary = boundaries[index]
-        if not any(x0 < boundary < x1 for x0, x1 in spans):
+        esquerda, direita = values[index - 1], values[index]
+        if esquerda is None or direita is None:
+            continue
+        cobre = any(x0 < boundary < x1
+                    and x0 <= esquerda[1] + _LABEL_TOUCH
+                    and x1 >= direita[0] - _LABEL_TOUCH
+                    for x0, x1 in words)
+        if not cobre:
             continue
         together = occupied[index - 1] & occupied[index]
         either = occupied[index - 1] | occupied[index]
@@ -362,7 +438,53 @@ def _is_laid_out_in_columns(line: list) -> bool:
                for left, right in zip(line, line[1:]))
 
 
-def _header_band(lines: list, body_start: int, boundaries: list, limit: int = 6) -> list:
+def _label_groups(line: list) -> list:
+    """Parte uma linha de cabecalho nas etiquetas que a compoem.
+
+    "Nota final" e uma etiqueta, "Exame" e outra: as palavras da mesma etiqueta
+    ficam a dois ou tres pontos umas das outras, as de etiquetas diferentes bem
+    mais longe.
+    """
+    grupos: list = []
+    atual: list = []
+    for word in line:
+        if atual and word["x0"] - atual[-1]["x1"] >= _LABEL_GAP:
+            grupos.append(atual)
+            atual = []
+        atual.append(word)
+    if atual:
+        grupos.append(atual)
+    return grupos
+
+
+def _column_for_label(group: list, spans: list, anchored: list):
+    """A que coluna pertence uma etiqueta do cabecalho.
+
+    Primeiro pela sobreposicao com os valores da coluna; so quando nao ha
+    sobreposicao nenhuma e que vale a proximidade -- e mesmo assim apenas para
+    colunas ainda sem etiqueta, para "Exame recurso" (uma coluna sem uma unica
+    nota, e portanto inexistente nos dados) nao ir roubar o nome ao "Exame".
+    """
+    x0, x1 = group[0]["x0"], group[-1]["x1"]
+    melhor, melhor_indice = 0.0, None
+    for index, span in enumerate(spans):
+        if span is None:
+            continue
+        sobreposicao = min(x1, span[1]) - max(x0, span[0])
+        if sobreposicao > melhor:
+            melhor, melhor_indice = sobreposicao, index
+    if melhor_indice is not None:
+        return melhor_indice
+
+    centro = (x0 + x1) / 2
+    livres = [i for i, span in enumerate(spans) if span is not None and not anchored[i]]
+    if not livres:
+        return None
+    return min(livres, key=lambda i: abs(centro - (spans[i][0] + spans[i][1]) / 2))
+
+
+def _header_band(lines: list, body_start: int, boundaries: list, spans: list,
+                 limit: int = 6) -> list:
     """Linhas de cabecalho, subindo a partir do corpo da tabela.
 
     Para na primeira linha que ja e prosa -- um titulo, uma legenda -- em vez de
@@ -373,25 +495,36 @@ def _header_band(lines: list, body_start: int, boundaries: list, limit: int = 6)
         line = lines[index]
         if not _is_laid_out_in_columns(line):
             break
-        cells = _split_line(line, boundaries)
-        if len([c for c in cells if c]) < 2:
+        grupos = _label_groups(line)
+        if len(grupos) < 2:
             break
-        if any(len(c.split()) >= _MAX_HEADER_WORDS for c in cells):
+        if any(len(g) >= _MAX_HEADER_WORDS for g in grupos):
+            break
+        if not any(_header_cells([line], boundaries, spans)):
             break
         band.append(index)
     band.reverse()
     return band
 
 
-def _merge_header(header_lines: list, boundaries: list) -> list:
-    """Junta as varias linhas do cabecalho numa so, coluna a coluna."""
+def _header_cells(header_lines: list, boundaries: list, spans: list) -> list:
+    """Distribui as etiquetas do cabecalho pelas colunas."""
     width = max(len(boundaries) - 1, 1)
-    parts = [[] for _ in range(width)]
+    parts: list = [[] for _ in range(width)]
+    anchored = [False] * width
     for line in header_lines:
-        for index, cell in enumerate(_split_line(line, boundaries)):
-            if cell:
-                parts[index].append(cell)
+        for group in _label_groups(line):
+            index = _column_for_label(group, spans, anchored)
+            if index is None:
+                continue
+            parts[index].append(clean_text(" ".join(w["text"] for w in group)))
+            anchored[index] = True
     return [clean_text(" ".join(p)) for p in parts]
+
+
+def _merge_header(header_lines: list, boundaries: list, spans: list) -> list:
+    """Junta as varias linhas do cabecalho numa so, coluna a coluna."""
+    return _header_cells(header_lines, boundaries, spans)
 
 
 # --------------------------------------------------------------------------

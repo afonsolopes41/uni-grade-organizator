@@ -284,9 +284,50 @@ def classify_columns(header_row: list, data_rows: list, file_epoca: Optional[str
 
     _pick_name_and_id(columns, data_rows)
     _assign_epocas(columns, file_epoca, data_rows)
+    _promote_exam_routes(columns, data_rows)
     _compute_clusters(columns, data_rows)
     _pick_final_columns(columns)
     return columns
+
+
+def _promote_exam_routes(columns: list, data_rows: list) -> None:
+    """Uma coluna «Exame» preenchida só para quem não tem nota final é uma via.
+
+    Em muitas cadeiras a nota vem da avaliação contínua *ou* do exame: quem foi
+    a exame tem a coluna «Nota final» vazia e a do exame preenchida. Sem isto
+    esses alunos ficavam sem nota nenhuma, porque «Exame» conta como componente.
+
+    O sinal não é o cabeçalho — é o preenchimento. Um «Exame 1» que toda a gente
+    tem, ao lado de uma «Nota Final» que toda a gente também tem, continua a ser
+    um componente dela.
+    """
+    finais = [c for c in columns if c.is_final]
+    if not finais or not data_rows:
+        return
+
+    for column in columns:
+        if column.role != ROLE_GRADE or column.kind == KIND_FINAL or column.locked:
+            continue
+        if not _has_word(norm_header(column.header), _EXAM_WORDS):
+            continue
+        pares = [c for c in finais if c.epoca == column.epoca]
+        if not pares:
+            continue
+
+        proprios = exclusivos = 0
+        for row in data_rows:
+            if parse_grade(_cell(row, column.index), scale=column.scale).is_empty:
+                continue
+            proprios += 1
+            if all(parse_grade(_cell(row, c.index), scale=c.scale).is_empty
+                   for c in pares):
+                exclusivos += 1
+
+        if proprios >= 2 and exclusivos >= proprios * 0.9:
+            column.kind = KIND_FINAL
+            column.route = ROUTE_EXAME
+            column.confidence = max(column.confidence, 0.7)
+            column.reason = Msg("reason.exam_route")
 
 
 def _compute_clusters(columns: list, data_rows: list) -> None:
@@ -1216,6 +1257,7 @@ def _moment_questions(source: Source, grade_columns: list) -> list:
         if column.is_final and column.moment and column.moment > 1:
             moments.setdefault(column.moment, []).append(column)
 
+
     questions = []
     for moment, group in sorted(moments.items()):
         earlier = [c for c in grade_columns if (c.moment or 1) < moment and c.epoca]
@@ -1372,5 +1414,6 @@ def refresh_columns(source: Source) -> None:
     certo com o que estava no ecra. Sem isto, um ajuste manual podia
     simplesmente nao ter efeito.
     """
+    _promote_exam_routes(source.columns, source.data_rows)
     _compute_clusters(source.columns, source.data_rows)
     _pick_final_columns(source.columns)

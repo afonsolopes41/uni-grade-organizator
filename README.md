@@ -78,6 +78,8 @@ confiança a cada conclusão.
 | Cabeçalhos em várias linhas | `Test 1` numa linha e `30%` na de baixo são o mesmo cabeçalho |
 | Nome e número de aluno | Cabeçalho (`Nome`, `Nº Aluno`, `Number`, `Name`…) e, se não bastar, a forma dos valores |
 | Número e nome na mesma coluna | `122631 Ana Silva`, `Ana Silva - 122631`, `nº 122631/Ana Silva`: a coluna passa a ser o nome e o número sai de lá para fora |
+| Número e nome colados num PDF | Quando estão a quatro pontos um do outro — menos do que separa duas colunas — separam-se na mesma: à esquerda números de aluno, à direita nomes (ver abaixo) |
+| A via do exame | Uma coluna `Exame` preenchida **só** para quem tem a `Nota final` vazia é a outra via da mesma época, não um componente |
 | Notas | Números, mas também `RE`, `NA`, `FA`, `f`, `m`, `d`, `RE m`, `Aprovado`, `-`, `13,25`, `13.25`, `85%`, `15/20` |
 | Épocas | `2.ª Época`, `Recurso`, `1E`, `Época Especial`; e blocos de colunas seguidas |
 | Momentos de avaliação | Se `Teste 2` é o 2.º teste da 1.ª época ou o recurso — decidido pelos dados (ver abaixo) |
@@ -111,6 +113,30 @@ O segundo sinal é o que impede juntar colunas a sério: `Nota Final` e
 separadas mesmo com uma palavra larga do cabeçalho por cima. E o «quase» abre
 espaço para notas compostas como `RE m`, que ocupam a coluna e um bocadinho da
 seguinte, mas só em meia dúzia de linhas.
+
+A palavra do cabeçalho tem ainda de **chegar aos valores das duas metades**.
+Cruzar o vazio entre elas não basta: numa pauta com `… Nota final | Exame`, a
+etiqueta «Exame» começa muito à esquerda dos seus próprios números e passa por
+cima do vazio que a separa da coluna anterior — mas nem toca nos valores dela, e
+por isso não as junta.
+
+### Colunas que se colam sozinhas
+
+O inverso acontece quando o número de aluno fica a quatro pontos do nome: menos
+do que separa duas colunas, e a reconstrução junta-os. Aqui há um sinal mais
+forte do que a distância — à esquerda estão números de aluno, à direita nomes de
+pessoa, e o corte é sempre no mesmo sítio. Confirmado em três quartos das linhas,
+faz-se o corte.
+
+### Etiquetas longe dos seus valores
+
+Numa coluna de números alinhados à direita, a etiqueta do cabeçalho começa muito
+antes deles: «Teste intercalar» arranca 60 pontos à esquerda dos `10,25` que
+encima. Por isso as etiquetas não se distribuem pelos limites das colunas mas
+pela **sobreposição com os valores** de cada uma, e só quando não há sobreposição
+nenhuma é que vale a proximidade. Uma etiqueta de uma coluna que não tem uma
+única nota — «Exame recurso», numa pauta onde ninguém foi a recurso — fica de
+fora em vez de ir roubar o nome à coluna do lado.
 
 ## A mesma cadeira com dois nomes
 
@@ -161,6 +187,13 @@ preenchimento: colunas de nota final preenchidas para *alunos diferentes* são
 vias alternativas e contam as duas — cada aluno fica com a da via que fez.
 Colunas preenchidas para os *mesmos* alunos (`Nota Final` e `Avaliação Final`)
 são a mesma nota escrita de duas maneiras, e só uma conta.
+
+O mesmo preenchimento promove a coluna do **exame**: numa pauta
+`Teste intercalar | 2.º teste | Labs | Nota final | Exame`, a coluna `Exame`
+tem nota exactamente para quem tem a `Nota final` vazia. Não é um componente —
+é a outra via, e sem isso quem foi a exame ficava sem nota nenhuma. Um `Exame 1`
+que toda a gente tem, ao lado de uma `Nota Final` que toda a gente também tem,
+continua a ser um componente dela.
 
 ### Quando não dá para deduzir, pergunta
 
@@ -367,7 +400,7 @@ gradeorg/
   app.py           API JSON + página
   server.py        arranque e abertura do navegador
   web/             index.html · style.css · app.js · i18n.js
-tests/             293 testes
+tests/             300 testes
 ```
 
 ## Testes
@@ -387,10 +420,10 @@ semestre, ano e curso, a gestão das cadeiras (criar, mudar o nome, apagar,
 repor, apontar ficheiros, origem), as cadeiras de um curso contra as comuns, o
 arredondamento da nota final, a ordem por ano e semestre, o número e o nome na
 mesma coluna em dez formatos diferentes, a memória entre arranques, as duas
-línguas (incluindo a garantia de que nenhuma chave fica por traduzir), a junção
-de alunos, a escolha da melhor nota, os conflitos entre versões, o Excel gerado
-(valores, fórmulas e o conjunto de funções seguras) e o percurso completo pela
-API.
+línguas (incluindo a garantia de que nenhuma chave fica por traduzir), a via do
+exame reconhecida pelo preenchimento, a junção de alunos, a escolha da melhor
+nota, os conflitos entre versões, o Excel gerado (valores, fórmulas e o conjunto
+de funções seguras) e o percurso completo pela API.
 
 ## Formatos aceites
 
