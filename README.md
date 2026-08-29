@@ -28,6 +28,11 @@ coluna da nota final e a que época pertence — mas não entram no resultado. U
 pauta que não traga nota final nenhuma não conta, e a aplicação diz porquê em
 vez de a deixar cair em silêncio.
 
+**E a nota final é inteira.** Se a pauta trouxer décimas, arredonda-se: 13,4 fica
+**13**, 13,5 fica **14**. É essa nota que aparece na listagem, que decide a
+aprovação, que entra nas médias e que vai para o Excel; a da pauta continua à
+vista na dica da célula e no detalhe do aluno.
+
 ## Como usar
 
 **Com o executável** (não precisa de Python):
@@ -72,6 +77,7 @@ confiança a cada conclusão.
 | Colunas de um PDF | Tenta a grelha desenhada **e** a reconstrução por posições, e fica com a que produzir a tabela mais cheia |
 | Cabeçalhos em várias linhas | `Test 1` numa linha e `30%` na de baixo são o mesmo cabeçalho |
 | Nome e número de aluno | Cabeçalho (`Nome`, `Nº Aluno`, `Number`, `Name`…) e, se não bastar, a forma dos valores |
+| Número e nome na mesma coluna | `122631 Ana Silva`, `Ana Silva - 122631`, `nº 122631/Ana Silva`: a coluna passa a ser o nome e o número sai de lá para fora |
 | Notas | Números, mas também `RE`, `NA`, `FA`, `f`, `m`, `d`, `RE m`, `Aprovado`, `-`, `13,25`, `13.25`, `85%`, `15/20` |
 | Épocas | `2.ª Época`, `Recurso`, `1E`, `Época Especial`; e blocos de colunas seguidas |
 | Momentos de avaliação | Se `Teste 2` é o 2.º teste da 1.ª época ou o recurso — decidido pelos dados (ver abaixo) |
@@ -173,10 +179,18 @@ O que fica por decidir vira uma pergunta na página, com o palpite já marcado:
   `Nota Trabalho` não há dúvida nenhuma.
 - **Que escala?** — se a nota mais alta for 10, tanto pode ser 0-20 como 0-10.
 
+Cada pergunta tem um botão **Abrir o documento**: a pauta abre num separador ao
+lado, para se poder responder a olhar para ela em vez de a ir procurar.
+
 Em **Ajustes avançados** vê-se cada coluna de cada ficheiro — se é o nome, o
 número, a **nota final** ou nada disso, a época, exemplos de valores e a
 confiança da detecção — e muda-se qualquer uma à mão. Como só a nota final
 conta, não há mais nada para escolher.
+
+Conferida uma pauta, o botão **✓ Confirmado** arruma-a: sai da lista e fica
+contada numa linha discreta («3 pautas já conferidas — mostrar»). Com uma dúzia
+de ficheiros carregados, é a diferença entre uma lista utilizável e uma parede
+de tabelas. Voltar a abrir é um clique.
 
 ## Como escolhe a melhor nota
 
@@ -196,6 +210,12 @@ duas. `RE` na 1.ª e `14` na 2.ª dá **14**.
 
 A tabela **Unidades curriculares** é o painel de controlo das cadeiras:
 
+- **Criar uma cadeira à mão** (**+ Nova cadeira**), mesmo antes de ter pautas
+  dela. Fica na lista com «sem pautas ainda», já a contar para o plano de
+  estudos, e recebe as pautas quando elas chegarem.
+- **Apontar um ficheiro a uma cadeira**: no passo *Ficheiros*, cada pauta tem um
+  selector de cadeira. Escolhida uma, todas as tabelas desse ficheiro passam a
+  ser dela; em branco, volta a valer o que a detecção diz.
 - **Mudar o nome** a qualquer momento — escreve-se por cima e carrega-se Enter.
   O nome novo leva consigo a nota mínima, o ano, o semestre e os ECTS, e fica
   guardado; nenhuma pauta precisa de ter esse nome escrito.
@@ -272,6 +292,12 @@ colunas de apoio — quanto contribui e quanto pesa — e as médias são a divi
 uma soma pela outra. Corrigir uma nota na folha da UC atravessa o Resumo e chega
 às médias.
 
+Na listagem, as cadeiras aparecem **agrupadas por ano e semestre**, com uma
+faixa por cima de cada grupo, e por **ordem alfabética dentro de cada um** (com
+os acentos onde devem estar: «Álgebra» antes de «Análise»). As que ainda não têm
+ano nem semestre ficam num grupo à parte, no fim. O Excel segue a mesma ordem e
+escreve o ano e o semestre por baixo do nome de cada UC no Resumo.
+
 ## Nota mínima por cadeira
 
 A nota mínima para passar **depende de cada cadeira**. Na página há um campo por
@@ -306,7 +332,7 @@ Em qualquer dos casos fica registado um conflito, visível na página e na folha
 
 | Folha | O que traz |
 |---|---|
-| **Resumo** | Notas mínimas de todas as UCs, um aluno por linha, uma coluna por UC, média e nº de aprovações; gráfico da distribuição por escalão |
+| **Resumo** | Notas mínimas de todas as UCs, um aluno por linha, uma coluna por UC (com o ano e o semestre por baixo do nome), média e nº de aprovações; gráfico da distribuição por escalão |
 | **Médias** | Médias por semestre, por ano e de curso, com as colunas de apoio agrupadas (podem ser recolhidas) |
 | **Uma por UC** | Nota mínima editável, as três épocas lado a lado, melhor nota, época da melhor, estado e origem; o subtítulo diz de que ficheiros veio |
 | **Detalhe** | Uma linha por nota, com o ficheiro de onde veio |
@@ -341,7 +367,7 @@ gradeorg/
   app.py           API JSON + página
   server.py        arranque e abertura do navegador
   web/             index.html · style.css · app.js · i18n.js
-tests/             260 testes
+tests/             293 testes
 ```
 
 ## Testes
@@ -357,12 +383,14 @@ todos os formatos encontrados, as pautas em inglês, a detecção de colunas e
 épocas (incluindo os casos que enganam), as modalidades de avaliação
 (2.º teste contra recurso, duas vias na mesma época, pautas de um componente só,
 nota mínima por cadeira), a identidade das cadeiras pelo código, as médias por
-semestre, ano e curso, a gestão das cadeiras (mudar o nome, apagar, repor,
-origem), as cadeiras de um curso contra as comuns, a memória entre arranques, as
-duas línguas (incluindo a garantia de que nenhuma chave fica por traduzir), a
-junção de alunos, a escolha da melhor nota, os conflitos entre versões, o Excel
-gerado (valores, fórmulas e o conjunto de funções seguras) e o percurso completo
-pela API.
+semestre, ano e curso, a gestão das cadeiras (criar, mudar o nome, apagar,
+repor, apontar ficheiros, origem), as cadeiras de um curso contra as comuns, o
+arredondamento da nota final, a ordem por ano e semestre, o número e o nome na
+mesma coluna em dez formatos diferentes, a memória entre arranques, as duas
+línguas (incluindo a garantia de que nenhuma chave fica por traduzir), a junção
+de alunos, a escolha da melhor nota, os conflitos entre versões, o Excel gerado
+(valores, fórmulas e o conjunto de funções seguras) e o percurso completo pela
+API.
 
 ## Formatos aceites
 

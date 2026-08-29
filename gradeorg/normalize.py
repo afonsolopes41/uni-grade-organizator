@@ -181,7 +181,14 @@ def parse_student_id(value: Any) -> Optional[str]:
     return None
 
 
-_ID_IN_NAME_RE = re.compile(r"^\s*(\d{4,12})\s*[-–.:]?\s+(\D.*)$|^(.*\D)\s+(\d{4,12})\s*$")
+#: Separadores que aparecem entre o numero e o nome quando vem na mesma
+#: celula: espaco, mas tambem "-", "|", "/", ":" e companhia, com ou sem espaco.
+_ID_NAME_SEP = r"(?:\s*[-–—.:|/]\s*|\s+)"
+_ID_PREFIX = r"(?:n\.?[ºo°]?\s*)?"
+_ID_THEN_NAME = re.compile(
+    rf"^{_ID_PREFIX}(\d{{4,12}}){_ID_NAME_SEP}(\D.+)$", re.IGNORECASE)
+_NAME_THEN_ID = re.compile(
+    rf"^(.+?\D){_ID_NAME_SEP}{_ID_PREFIX}(\d{{4,12}})$", re.IGNORECASE)
 
 
 def split_id_from_name(value: Any):
@@ -191,15 +198,23 @@ def split_id_from_name(value: Any):
     ``(None, texto)`` quando nao ha numero para separar.
     """
     text = clean_text(value)
-    match = _ID_IN_NAME_RE.match(text)
-    if not match:
-        return None, text
-    student_id, name = (match.group(1), match.group(2)) if match.group(1) else \
-                       (match.group(4), match.group(3))
-    name = clean_text(name)
-    if not looks_like_person_name(name):
-        return None, text
-    return parse_student_id(student_id), name
+    for pattern, first_is_id in ((_ID_THEN_NAME, True), (_NAME_THEN_ID, False)):
+        match = pattern.match(text)
+        if not match:
+            continue
+        student_id, name = ((match.group(1), match.group(2)) if first_is_id
+                            else (match.group(2), match.group(1)))
+        name = clean_text(name)
+        # O nome tem de ser mesmo um nome: sem isto, "2024 15" seria separado.
+        if looks_like_person_name(name):
+            return parse_student_id(student_id), name
+    return None, text
+
+
+def looks_like_id_and_name(value: Any) -> bool:
+    """A celula traz o numero e o nome juntos ("122631 Ana Silva")?"""
+    student_id, name = split_id_from_name(value)
+    return bool(student_id and name)
 
 
 # --------------------------------------------------------------------------

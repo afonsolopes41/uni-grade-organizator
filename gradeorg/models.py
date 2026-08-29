@@ -97,6 +97,8 @@ class Column:
     samples: list = field(default_factory=list)
     #: Definida pelo utilizador -- a detecção automática não lhe volta a tocar.
     locked: bool = False
+    #: A coluna traz o numero e o nome juntos ("122631 Ana Silva").
+    combined: bool = False
 
     @property
     def is_final(self) -> bool:
@@ -120,6 +122,7 @@ class Column:
             "filled_ratio": round(self.filled_ratio, 2),
             "max_value": self.max_value,
             "locked": self.locked,
+            "combined": self.combined,
             "samples": self.samples[:5],
         }
 

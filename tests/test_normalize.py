@@ -3,8 +3,9 @@
 import pytest
 
 from gradeorg.normalize import (
-    Grade, format_grade, looks_like_person_name, norm_header, norm_name,
-    parse_grade, parse_number, parse_student_id, round_grade, title_name,
+    Grade, format_grade, looks_like_id_and_name, looks_like_person_name,
+    norm_header, norm_name, parse_grade, parse_number, parse_student_id,
+    round_grade, split_id_from_name, title_name,
 )
 
 
@@ -100,3 +101,39 @@ def test_format_grade_usa_virgula():
 def test_grade_label():
     assert Grade(value=14.5).label == "14,5"
     assert Grade(status="REPROVADO").label == "Reprovado"
+
+
+# -- número e nome na mesma célula -----------------------------------------
+
+@pytest.mark.parametrize("celula", [
+    "122631 Afonso Duarte Rosado Lopes",
+    "Afonso Duarte Rosado Lopes 122631",
+    "122631-Afonso Duarte Rosado Lopes",
+    "122631 - Afonso Duarte Rosado Lopes",
+    "122631|Afonso Duarte Rosado Lopes",
+    "122631/Afonso Duarte Rosado Lopes",
+    "122631: Afonso Duarte Rosado Lopes",
+    "nº 122631 Afonso Duarte Rosado Lopes",
+    "Afonso Duarte Rosado Lopes - 122631",
+    "122631  Afonso   Duarte Rosado Lopes",
+])
+def test_separa_o_numero_do_nome_em_varios_formatos(celula):
+    numero, nome = split_id_from_name(celula)
+    assert numero == "122631"
+    assert nome == "Afonso Duarte Rosado Lopes"
+
+
+@pytest.mark.parametrize("celula", [
+    "Afonso Duarte Rosado Lopes",   # só nome
+    "122631",                       # só número
+    "13,25 15,5",                   # duas notas
+    "2024 15",                      # não é nome nenhum
+    "Turma ET-C9",
+])
+def test_nao_separa_o_que_nao_e_numero_mais_nome(celula):
+    assert split_id_from_name(celula)[0] is None
+
+
+def test_reconhece_a_celula_com_numero_e_nome():
+    assert looks_like_id_and_name("122631 Afonso Duarte Rosado Lopes")
+    assert not looks_like_id_and_name("Afonso Duarte Rosado Lopes")

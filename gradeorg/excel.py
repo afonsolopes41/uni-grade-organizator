@@ -24,9 +24,10 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter, quote_sheetname
 from openpyxl.worksheet.worksheet import Worksheet
 
-from .i18n import DEFAULT_LANGUAGE, epoca_label, notice_type, render, tr
+from .i18n import (DEFAULT_LANGUAGE, epoca_label, group_label, notice_type,
+                   render, tr)
 from .models import EPOCAS
-from .normalize import Grade
+from .normalize import Grade, round_grade
 
 FONT = "Arial"
 
@@ -209,9 +210,10 @@ def build_workbook(result: dict, source_labels: Optional[list] = None,
 
     summary_name = tr("xl.sheet.summary", lang)
     summary = workbook.create_sheet(summary_name)
+    curriculum = result.get("curriculum") or {}
     summary_first_row = _build_summary(summary, students, subjects, subject_sheets,
                                        subject_extent, pass_marks, pass_mark,
-                                       stamp, origem, lang)
+                                       stamp, origem, lang, curriculum)
 
     for subject in subjects:
         sheet = workbook.create_sheet(subject_sheets[subject])
@@ -222,8 +224,7 @@ def build_workbook(result: dict, source_labels: Optional[list] = None,
     if subjects:
         _build_averages(workbook.create_sheet(tr("xl.sheet.averages", lang)),
                         students, subjects, subject_sheets, summary_first_row,
-                        pass_mark, result.get("curriculum") or {}, stamp,
-                        summary_name, lang)
+                        pass_mark, curriculum, stamp, summary_name, lang)
 
     _build_detail(workbook.create_sheet(tr("xl.sheet.detail", lang)),
                   students, subjects, stamp, lang)
@@ -241,7 +242,8 @@ def build_workbook(result: dict, source_labels: Optional[list] = None,
 def _build_summary(sheet: Worksheet, students: list, subjects: list,
                    subject_sheets: dict, subject_extent: dict,
                    pass_marks: dict, default_pass: float, stamp: str, origem: str,
-                   lang: str = DEFAULT_LANGUAGE) -> int:
+                   lang: str = DEFAULT_LANGUAGE,
+                   curriculum: Optional[dict] = None) -> int:
     width = max(2 + len(subjects) + 3, 4)
     row = _title_block(sheet, width, tr("xl.summary.title", lang),
                        tr("xl.summary.subtitle", lang, stamp=stamp, files=origem))
@@ -269,7 +271,18 @@ def _build_summary(sheet: Worksheet, students: list, subjects: list,
         pass_refs = {}
     row += 1
 
-    headers = ([tr("xl.col.student_id", lang), tr("xl.col.name", lang)] + subjects
+    # O cabecalho de cada UC leva o ano e o semestre por baixo do nome: e assim
+    # que se veem os grupos sem partir a tabela em varias.
+    curriculum = curriculum or {}
+    titulos = []
+    for subject in subjects:
+        meta = curriculum.get(subject) or {}
+        if meta.get("year") is not None or meta.get("semester") is not None:
+            titulos.append(f"{subject}\n"
+                           + group_label(meta.get("year"), meta.get("semester"), lang))
+        else:
+            titulos.append(subject)
+    headers = ([tr("xl.col.student_id", lang), tr("xl.col.name", lang)] + titulos
                + [tr("xl.col.average", lang), tr("xl.col.approved", lang),
                   tr("xl.col.subjects", lang)])
     widths = [11, 42] + [max(14, min(24, len(s) // 2 + 8)) for s in subjects] + [10, 11, 8]
@@ -294,13 +307,14 @@ def _build_summary(sheet: Worksheet, students: list, subjects: list,
             target = quote_sheetname(subject_sheets[subject])
             first, last = subject_extent[subject]
             if best.value is not None and student["student_id"] and student["student_id"].isdigit():
-                # Puxa da folha da UC para que uma correcao la se reflicta aqui.
-                cell.value = (f"=IFERROR(INDEX({target}!$F${first}:$F${last},"
+                # Puxa a nota final (coluna G, já arredondada) da folha da UC,
+                # para que uma correcção lá se reflicta aqui.
+                cell.value = (f"=IFERROR(INDEX({target}!$G${first}:$G${last},"
                               f"MATCH($A{current},{target}!$A${first}:$A${last},0)),\"—\")")
-                cell.number_format = GRADE_FORMAT
+                cell.number_format = "0"
             elif best.value is not None:
-                cell.value = round(best.value, 4)
-                cell.number_format = GRADE_FORMAT
+                cell.value = round_grade(best.value)
+                cell.number_format = "0"
             else:
                 cell.value = best.label_in(lang)
                 cell.font = Font(name=FONT, size=10, italic=True, color=MUTED)
@@ -359,7 +373,7 @@ def _distribution_block(sheet: Worksheet, row: int, subjects: list,
         for offset, subject in enumerate(subjects):
             target = quote_sheetname(subject_sheets[subject])
             first, last = subject_extent[subject]
-            span = f"{target}!$F${first}:$F${last}"
+            span = f"{target}!$G${first}:$G${last}"
             sheet.cell(row=current, column=2 + offset,
                        value=f'=COUNTIFS({span},">="&{low},{span},"<="&{high})')
     last = header_row + len(bands)

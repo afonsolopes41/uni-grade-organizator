@@ -12,7 +12,7 @@ import sys
 import threading
 import traceback
 
-from flask import Flask, jsonify, request, send_file, send_from_directory
+from flask import Flask, abort, jsonify, request, send_file, send_from_directory
 
 from .excel import build_workbook
 from .i18n import tr
@@ -20,6 +20,18 @@ from .parsers import SUPPORTED, UnsupportedFile
 from .session import SESSION
 
 MAX_UPLOAD_BYTES = 64 * 1024 * 1024
+
+#: Tipos com que os ficheiros carregados voltam a sair, para o navegador os
+#: poder mostrar em vez de os descarregar.
+MIME_TYPES = {
+    ".pdf": "application/pdf",
+    ".csv": "text/plain; charset=utf-8",
+    ".tsv": "text/plain; charset=utf-8",
+    ".txt": "text/plain; charset=utf-8",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".xlsm": "application/vnd.ms-excel.sheet.macroEnabled.12",
+    ".xltx": "application/vnd.openxmlformats-officedocument.spreadsheetml.template",
+}
 
 
 def resource_dir() -> str:
@@ -99,6 +111,10 @@ def create_app() -> Flask:
         subject = (body.get("subject") or "").strip()
         if action == "rename":
             SESSION.rename_subject(subject, body.get("name") or "")
+        elif action == "create":
+            SESSION.create_subject(body.get("name") or subject)
+        elif action == "assign":
+            SESSION.assign_file(body.get("file") or "", subject)
         elif action == "remove":
             SESSION.remove_subject(subject)
         elif action == "restore":
@@ -107,6 +123,26 @@ def create_app() -> Flask:
             return jsonify({"error": tr("api.unknown_action", SESSION.language,
                                         action=action)}), 400
         return jsonify(SESSION.review())
+
+    @app.post("/api/sources/confirm")
+    def api_confirm_source():
+        """Marca uma pauta como conferida (arruma-a nos ajustes avançados)."""
+        body = request.get_json(silent=True) or {}
+        SESSION.confirm_source(body.get("source_id") or "",
+                               bool(body.get("confirmed", True)))
+        return jsonify(SESSION.review())
+
+    @app.get("/api/document/<source_id>")
+    def api_document(source_id: str):
+        """Devolve o ficheiro original, para se poder conferir a resposta."""
+        uploaded = SESSION.file_for_source(source_id)
+        if uploaded is None or not os.path.exists(uploaded.path):
+            abort(404)
+        extension = os.path.splitext(uploaded.name)[1].lower()
+        return send_file(uploaded.path, as_attachment=False,
+                         download_name=uploaded.name,
+                         mimetype=MIME_TYPES.get(extension,
+                                                 "application/octet-stream"))
 
     @app.post("/api/language")
     def api_language():

@@ -187,7 +187,7 @@ def test_duas_representacoes_da_mesma_nota_nao_sao_vias():
 # -- nota mínima por cadeira ----------------------------------------------
 
 def test_nota_minima_e_por_cadeira():
-    a = source([["Nome", "Nota Final"], ["Ana Maria Silva", "9,7"]],
+    a = source([["Nome", "Nota Final"], ["Ana Maria Silva", "9,4"]],
                titulo="Análise Matemática - Pauta")
     b = build_source("s2", "b.pdf", "pdf", RawTable(
         rows=[["Nome", "Nota Final"], ["Ana Maria Silva", "9,7"]],

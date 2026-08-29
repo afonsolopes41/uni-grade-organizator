@@ -60,6 +60,7 @@ CATALOG = {
         "reason.empty_column": "coluna vazia",
         "reason.header_not_grade": "cabeçalho «{header}» não é uma nota",
         "reason.header_name": "cabeçalho indica nome",
+        "reason.id_and_name": "o número e o nome vêm na mesma coluna",
         "reason.header_id": "cabeçalho indica número de aluno",
         "reason.values_names": "os valores parecem nomes de pessoas",
         "reason.values_ids": "os valores parecem números de aluno",
@@ -252,6 +253,9 @@ CATALOG = {
         "xl.averages.subtitle":
             "Contam as cadeiras aprovadas · os ECTS em branco valem 1 · gerado em {stamp}",
         "xl.averages.semester": "{year}.º ano · {semester}.º sem.",
+        "group.year": "{year}.º ano",
+        "group.semester": "{semester}.º semestre",
+        "group.none": "Sem ano nem semestre",
         "xl.averages.year": "Média do {year}.º ano",
         "xl.averages.final": "Média de curso",
         "xl.detail.title": "Detalhe de todas as notas",
@@ -293,6 +297,7 @@ CATALOG = {
         "reason.empty_column": "empty column",
         "reason.header_not_grade": "heading «{header}» is not a grade",
         "reason.header_name": "heading says it is a name",
+        "reason.id_and_name": "the number and the name share one column",
         "reason.header_id": "heading says it is a student number",
         "reason.values_names": "the values look like people's names",
         "reason.values_ids": "the values look like student numbers",
@@ -483,6 +488,9 @@ CATALOG = {
         "xl.averages.subtitle":
             "Only passed courses count · blank ECTS count as 1 · generated on {stamp}",
         "xl.averages.semester": "Year {year} · semester {semester}",
+        "group.year": "Year {year}",
+        "group.semester": "Semester {semester}",
+        "group.none": "No year or semester",
         "xl.averages.year": "Year {year} average",
         "xl.averages.final": "Degree average",
         "xl.detail.title": "Every grade, one per row",
@@ -573,6 +581,17 @@ def render(value, lang: str = DEFAULT_LANGUAGE):
     if isinstance(value, list):
         return [render(item, lang) for item in value]
     return value
+
+
+def group_label(year, semester, lang: str = DEFAULT_LANGUAGE) -> str:
+    """«3.º ano · 2.º sem.», «3.º ano», «Sem ano nem semestre»."""
+    if year is not None and semester is not None:
+        return tr("xl.averages.semester", lang, year=year, semester=semester)
+    if year is not None:
+        return tr("group.year", lang, year=year)
+    if semester is not None:
+        return tr("group.semester", lang, semester=semester)
+    return tr("group.none", lang)
 
 
 def location_label(token, lang: str = DEFAULT_LANGUAGE) -> str:

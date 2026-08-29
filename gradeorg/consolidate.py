@@ -14,7 +14,6 @@ Trata de tres problemas:
 from __future__ import annotations
 
 import difflib
-import unicodedata
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -31,6 +30,7 @@ from .normalize import (
     parse_student_id,
     round_grade,
     split_id_from_name,
+    strip_accents,
     title_name,
 )
 
@@ -53,6 +53,10 @@ class Settings:
     #: Cadeiras que o utilizador apagou: continuam nos ficheiros, mas ficam de
     #: fora das notas, das medias e do Excel.
     removed_subjects: list = field(default_factory=list)
+    #: Cadeiras criadas a mao, que podem ainda nao ter pauta nenhuma.
+    manual_subjects: list = field(default_factory=list)
+    #: Fontes que o utilizador ja conferiu -- ficam arrumadas na interface.
+    confirmed_sources: list = field(default_factory=list)
     scale: float = DEFAULT_SCALE
     merge_by_name: bool = True
     #: Lingua da interface e do Excel ("pt" ou "en").
@@ -97,6 +101,10 @@ class Settings:
         settings.subject_aliases = dict(data.get("subject_aliases") or {})
         settings.removed_subjects = sorted(
             {str(s) for s in (data.get("removed_subjects") or []) if s})
+        settings.manual_subjects = list(dict.fromkeys(
+            str(s).strip() for s in (data.get("manual_subjects") or []) if str(s).strip()))
+        settings.confirmed_sources = sorted(
+            {str(s) for s in (data.get("confirmed_sources") or []) if s})
         settings.language = normalize_language(data.get("language"))
         for subject, meta in (data.get("subject_curriculum") or {}).items():
             entry = dict(settings.subject_curriculum.get(subject) or {})
@@ -131,6 +139,8 @@ class Settings:
                 "subject_curriculum": {k: dict(v) for k, v in
                                        self.subject_curriculum.items()},
                 "removed_subjects": list(self.removed_subjects),
+                "manual_subjects": list(self.manual_subjects),
+                "confirmed_sources": list(self.confirmed_sources),
                 "scale": self.scale,
                 "merge_by_name": self.merge_by_name,
                 "language": self.language}
@@ -155,6 +165,35 @@ def subject_group_key(source) -> str:
     if source.subject.value:
         return f"nome:{norm_name(source.subject.value)}"
     return f"ficheiro:{source.id}"
+
+
+def order_subjects(subjects: list, curriculum: dict) -> list:
+    """Ordena as cadeiras por ano e semestre, e alfabeticamente dentro de cada um.
+
+    As que ainda nao tem ano nem semestre vao para o fim, para nao se
+    intrometerem entre os grupos que ja estao arrumados.
+    """
+    def key(subject: str):
+        meta = curriculum.get(subject) or {}
+        year, semester = meta.get("year"), meta.get("semester")
+        return (0 if year is not None else 1, year or 0,
+                0 if semester is not None else 1, semester or 0,
+                _sort_key(subject))
+    return sorted(subjects, key=key)
+
+
+def subject_groups(subjects: list, curriculum: dict) -> list:
+    """As cadeiras agrupadas por (ano, semestre), na ordem em que aparecem."""
+    grupos: list = []
+    for subject in subjects:
+        meta = curriculum.get(subject) or {}
+        chave = (meta.get("year"), meta.get("semester"))
+        if grupos and grupos[-1]["key"] == list(chave):
+            grupos[-1]["subjects"].append(subject)
+        else:
+            grupos.append({"key": list(chave), "year": chave[0],
+                           "semester": chave[1], "subjects": [subject]})
+    return grupos
 
 
 def detected_semesters(sources: list, subject_names: dict) -> dict:
@@ -323,11 +362,14 @@ def extract_records(sources: list, settings: Settings,
 
             name = title_name(cell(name_column))
             student_id = parse_student_id(cell(id_column)) if id_column else None
-            if student_id is None:
-                # Pautas que juntam o número e o nome na mesma coluna.
-                embedded, cleaned = split_id_from_name(name)
-                if embedded:
-                    student_id, name = embedded, title_name(cleaned)
+            # Pautas que juntam o número e o nome na mesma coluna. Tira-se
+            # sempre o número de dentro do nome, mesmo quando há uma coluna
+            # própria para ele -- senão o aluno ficava chamado «122631 Ana».
+            embedded, cleaned = split_id_from_name(name)
+            if embedded:
+                name = title_name(cleaned)
+                if student_id is None:
+                    student_id = embedded
             if not name and not student_id:
                 continue
 
@@ -478,6 +520,17 @@ def _best_id(cluster: list):
 # Resultado por UC
 # --------------------------------------------------------------------------
 
+def final_value(grade: Optional[Grade], scale: float = DEFAULT_SCALE):
+    """A nota que fica: inteira, com as décimas arredondadas (13,5 -> 14).
+
+    A pauta pode trazer décimas, mas a nota final de uma cadeira é um número
+    inteiro -- e é essa que conta para aprovar e para as médias.
+    """
+    if grade is None:
+        return None
+    return round_grade(_to_scale(grade, scale))
+
+
 def _to_scale(grade: Grade, scale: float) -> Optional[float]:
     """Valor convertido para a escala de trabalho (por omissao 0-20)."""
     if grade.value is None:
@@ -535,8 +588,12 @@ def consolidate(sources: list, settings: Optional[Settings] = None) -> dict:
 
     # Cadeiras apagadas pelo utilizador saem de tudo -- notas, medias e Excel.
     active = [s for s in sources if not settings.is_removed(subject_names.get(s.id))]
-    known_subjects = sorted({subject_names[s.id] for s in active
-                             if subject_names.get(s.id)}, key=_sort_key)
+    known_subjects = sorted(
+        {subject_names[s.id] for s in active if subject_names.get(s.id)}
+        # Cadeiras criadas a mao contam mesmo sem pauta nenhuma: e assim que se
+        # monta o plano de estudos antes de ter as notas todas.
+        | {s for s in settings.manual_subjects if not settings.is_removed(s)},
+        key=_sort_key)
     files_by_subject = subject_files(active, subject_names)
     courses = {subject: settings.course_for(subject) for subject in known_subjects}
 
@@ -683,8 +740,10 @@ def consolidate(sources: list, settings: Optional[Settings] = None) -> dict:
         })
 
     students.sort(key=lambda s: _sort_key(s["name"]))
-    listed = sorted({s for st in students for s in st["subjects"]}, key=_sort_key)
-    subject_list = listed + [s for s in known_subjects if s not in listed]
+    listed = {s for st in students for s in st["subjects"]}
+    subject_list = order_subjects(sorted(listed | set(known_subjects), key=_sort_key),
+                                  {s: effective_curriculum(s, settings, semestres)
+                                   for s in listed | set(known_subjects)})
     pass_marks = {s: settings.pass_mark_for(s) for s in subject_list}
 
     for suggestion in find_similar_names(clusters):
@@ -726,6 +785,7 @@ def consolidate(sources: list, settings: Optional[Settings] = None) -> dict:
         "pass_marks": pass_marks,
         "curriculum": curriculum,
         "courses": courses,
+        "subject_groups": subject_groups(subject_list, curriculum),
         "subject_files": files_by_subject,
         "removed_subjects": sorted(settings.removed_subjects),
         "merged_subjects": merged_subjects,
@@ -806,7 +866,8 @@ def _approved(grade: Optional[Grade], settings: Settings, subject: Optional[str]
     if grade is None:
         return None
     if grade.value is not None:
-        return _to_scale(grade, settings.scale) >= settings.pass_mark_for(subject) - 1e-9
+        # Aprova-se com a nota final -- a arredondada, que é a que fica.
+        return final_value(grade, settings.scale) >= settings.pass_mark_for(subject) - 1e-9
     if grade.status == "APROVADO":
         return True
     if grade.status in ("REPROVADO", "FALTOU", "DESISTIU", "NAO_ADMITIDO"):
@@ -844,7 +905,7 @@ def _student_averages(subjects: dict, settings: Settings, detected: dict) -> dic
         if data["approved"] is not True or grade is None or grade.value is None:
             continue
         meta = effective_curriculum(subject, settings, detected)
-        value = _to_scale(grade, settings.scale)
+        value = final_value(grade, settings.scale)
         ects = meta.get("ects")
         todas.append((value, ects))
 
@@ -870,6 +931,8 @@ def _student_averages(subjects: dict, settings: Settings, detected: dict) -> dic
     final = _weighted_mean(todas)
     if final:
         final["rounded"] = round_grade(final["value"])
+    for entry in semesters + years:
+        entry["rounded"] = round_grade(entry["value"])
     return {"semesters": semesters, "years": years, "final": final,
             "missing_curriculum": sorted(incompletas)}
 
@@ -879,7 +942,12 @@ def _student_key(student_id: Optional[str], name: str) -> str:
 
 
 def _sort_key(text: str) -> str:
-    return unicodedata.normalize("NFKD", (text or "").lower())
+    """Ordem alfabética à portuguesa: «Álgebra» antes de «Análise».
+
+    Sem tirar os acentos, o acento combinante vale mais do que qualquer letra e
+    manda as palavras acentuadas para o fim.
+    """
+    return strip_accents((text or "").lower())
 
 
 def _stats(students: list, subjects: list, settings: Settings) -> dict:
@@ -895,7 +963,7 @@ def _stats(students: list, subjects: list, settings: Settings) -> dict:
                 pending += 1
             grade = result["best"]
             if grade is not None and grade.value is not None:
-                values.append(_to_scale(grade, settings.scale))
+                values.append(final_value(grade, settings.scale))
     return {
         "students": len(students),
         "subjects": len(subjects),
@@ -971,6 +1039,7 @@ def to_json(result: dict, lang: str = DEFAULT_LANGUAGE) -> dict:
         "pass_marks": result.get("pass_marks", {}),
         "curriculum": result.get("curriculum", {}),
         "courses": result.get("courses", {}),
+        "subject_groups": result.get("subject_groups", []),
         "subject_files": result.get("subject_files", {}),
         "removed_subjects": result.get("removed_subjects", []),
         "merged_subjects": result.get("merged_subjects", []),

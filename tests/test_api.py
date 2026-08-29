@@ -203,3 +203,42 @@ def test_api_diz_de_que_ficheiros_vem_cada_cadeira(client):
     upload(client, "pauta.csv", CSV_PSTE)
     ficheiros = client.get("/api/state").get_json()["subject_files"]
     assert [*ficheiros.values()][0] == ["pauta.csv"]
+
+
+def test_api_cria_uma_cadeira_e_aponta_lhe_um_ficheiro(client):
+    upload(client, "pauta.csv", CSV_PSTE)
+    criada = client.post("/api/subjects", json={"action": "create", "name": "Óptica"})
+    assert "Óptica" in criada.get_json()["subjects"]
+
+    apontada = client.post("/api/subjects", json={
+        "action": "assign", "file": "pauta.csv", "subject": "Óptica"})
+    assert apontada.get_json()["subject_files"]["Óptica"] == ["pauta.csv"]
+
+
+def test_api_abre_o_documento_de_uma_fonte(client):
+    upload(client, "pauta.csv", CSV_PSTE)
+    fonte = client.get("/api/state").get_json()["sources"][0]["id"]
+    resposta = client.get(f"/api/document/{fonte}")
+    assert resposta.status_code == 200
+    assert b"Ana Maria Silva" in resposta.data
+    assert client.get("/api/document/f99s0").status_code == 404
+
+
+def test_api_confirma_uma_pauta(client):
+    upload(client, "pauta.csv", CSV_PSTE)
+    fonte = client.get("/api/state").get_json()["sources"][0]["id"]
+    depois = client.post("/api/sources/confirm", json={"source_id": fonte})
+    assert depois.get_json()["confirmed_sources"] == [fonte]
+    voltou = client.post("/api/sources/confirm",
+                         json={"source_id": fonte, "confirmed": False})
+    assert voltou.get_json()["confirmed_sources"] == []
+
+
+def test_api_traz_as_notas_finais_arredondadas(client):
+    upload(client, "decimas.csv",
+           "Nome;Nº Aluno;Nota Final\nAna Maria Silva;112233;13,4\n"
+           "Rui Costa Lopes;112234;13,5\n".encode("utf-8"))
+    alunos = {a["name"]: a for a in client.get("/api/results").get_json()["students"]}
+    uc = next(iter(alunos["Ana Maria Silva"]["subjects"]))
+    assert alunos["Ana Maria Silva"]["subjects"][uc]["best_rounded"] == 13
+    assert alunos["Rui Costa Lopes"]["subjects"][uc]["best_rounded"] == 14

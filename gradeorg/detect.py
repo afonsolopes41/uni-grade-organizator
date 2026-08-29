@@ -33,6 +33,7 @@ from .models import (
 )
 from .normalize import (
     clean_text,
+    looks_like_id_and_name,
     looks_like_person_name,
     norm_header,
     norm_text,
@@ -220,6 +221,7 @@ def _column_stats(values: list) -> dict:
     numbers = [n for n in numbers if n is not None]
     ids = [v for v in filled if parse_student_id(v)]
     names = [v for v in filled if looks_like_person_name(v)]
+    combined = [v for v in filled if looks_like_id_and_name(v)]
 
     # Celulas que sao nota mesmo sem serem numero: "RE", "NA", "-", ...
     statuses, dashes = 0, 0
@@ -242,6 +244,7 @@ def _column_stats(values: list) -> dict:
         "gradeish_ratio": (len(numbers) + statuses + dashes) / denom,
         "id_ratio": len(ids) / denom,
         "name_ratio": len(names) / denom,
+        "combined_ratio": len(combined) / denom,
         "max_value": max(numbers) if numbers else None,
         "min_value": min(numbers) if numbers else None,
         "distinct": len({clean_text(v) for v in filled}),
@@ -340,6 +343,16 @@ def _classify_one(column: Column, header: str, stats: dict) -> Column:
         column.role = ROLE_IGNORE
         column.reason = Msg("reason.header_not_grade", header=column.header)
         column.confidence = 0.7
+        return column
+
+    # Antes de tudo o resto: ha pautas que poem o numero e o nome na mesma
+    # coluna. Se passasse pelo teste do numero, "122631 Ana Silva" virava a
+    # coluna do numero e o nome desaparecia.
+    if stats["combined_ratio"] >= 0.6:
+        column.role = ROLE_NAME
+        column.combined = True
+        column.confidence = 0.9
+        column.reason = Msg("reason.id_and_name")
         return column
 
     if _has_word(header, NAME_WORDS) and stats["numeric_ratio"] < 0.5:

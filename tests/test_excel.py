@@ -69,14 +69,15 @@ def resumo_header_row(sheet):
     raise AssertionError("cabeçalho do Resumo não encontrado")
 
 
-def test_resumo_puxa_da_folha_da_uc_pelo_numero(workbook):
+def test_resumo_puxa_a_nota_final_da_folha_da_uc(workbook):
+    """Coluna G da folha da UC: a nota final, já arredondada."""
     resumo = workbook["Resumo"]
     linha = resumo_header_row(resumo) + 1
     primeira = SUBJECT_HEADER_ROW + 1
     ultima = SUBJECT_HEADER_ROW + 3
     formula = resumo.cell(row=linha, column=3).value
     assert formula.startswith(
-        f"=IFERROR(INDEX('Análise Matemática'!$F${primeira}:$F${ultima}")
+        f"=IFERROR(INDEX('Análise Matemática'!$G${primeira}:$G${ultima}")
     assert (f"MATCH($A{linha},'Análise Matemática'!$A${primeira}:$A${ultima},0)"
             in formula)
 
@@ -176,3 +177,40 @@ def test_livro_sem_conflitos_diz_que_esta_tudo_bem(workbook):
     textos = [c.value for row in avisos.iter_rows(max_row=10) for c in row
               if isinstance(c.value, str)]
     assert any("Sem conflitos" in t for t in textos)
+
+
+# -- nota final arredondada e grupos por ano/semestre ----------------------
+
+def _livro(rows, curriculum=None, **kwargs):
+    from gradeorg.consolidate import Settings
+    settings = Settings(subject_curriculum=curriculum or {})
+    src = build_source("s1", "pauta.pdf", "pdf", RawTable(
+        rows=rows, title_lines=["Análise Matemática - Pauta 2025/2026"]))
+    return build_workbook(consolidate([src], settings), ["pauta.pdf"], **kwargs)
+
+
+def test_resumo_escreve_a_nota_final_arredondada(tmp_path):
+    """Sem número de aluno não há fórmula: fica o valor -- e é o arredondado."""
+    book = _livro([["Nome", "Nota Final"],
+                   ["Ana Maria Silva", "13,4"],
+                   ["Rui Costa Lopes", "13,5"]])
+    path = tmp_path / "s.xlsx"
+    book.save(path)
+    resumo = openpyxl.load_workbook(path)["Resumo"]
+    valores = {}
+    for row in resumo.iter_rows(min_row=2, values_only=True):
+        if row[1] in ("Ana Maria Silva", "Rui Costa Lopes"):
+            valores[row[1]] = row[2]
+    assert valores == {"Ana Maria Silva": 13, "Rui Costa Lopes": 14}
+
+
+def test_resumo_diz_o_ano_e_o_semestre_no_cabecalho_da_uc(tmp_path):
+    book = _livro([["Nome", "Nº Aluno", "Nota Final"],
+                   ["Ana Maria Silva", "112233", "15"]],
+                  curriculum={"Análise Matemática": {"year": 2, "semester": 1}})
+    path = tmp_path / "s.xlsx"
+    book.save(path)
+    resumo = openpyxl.load_workbook(path)["Resumo"]
+    cabecalhos = [c.value for row in resumo.iter_rows(min_row=1, max_row=12)
+                  for c in row if isinstance(c.value, str) and "Análise" in c.value]
+    assert any("2.º ano · 1.º sem." in c for c in cabecalhos)

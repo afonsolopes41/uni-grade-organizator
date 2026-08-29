@@ -165,3 +165,128 @@ def test_ficheiros_por_cadeira_juntam_as_duas_pautas():
     ficheiros = subject_files(fontes, nomes_uc)
     assert len(ficheiros) == 1
     assert sorted(next(iter(ficheiros.values()))) == ["SGR_en.pdf", "SGR_pt.pdf"]
+
+
+# -- número e nome na mesma coluna ------------------------------------------
+
+def test_pauta_com_numero_e_nome_na_mesma_coluna():
+    """A coluna «Aluno» traz «122631 Afonso Lopes»: tem de dar aluno e número."""
+    src = fonte("s1", "SCO.pdf", ["Sistemas de Comunicação Óptica"],
+                [["Aluno", "Nota Final"],
+                 ["122631 Afonso Duarte Rosado Lopes", "15"],
+                 ["122625 Afonso Ruas Mexia", "13"],
+                 ["122657 Alexandre Campos Corgas Duarte", "17"]])
+    coluna = next(c for c in src.columns if c.index == 0)
+    assert coluna.role == "name"
+    assert coluna.combined is True
+
+    resultado = consolidate([src], Settings())
+    por_numero = {a["student_id"]: a["name"] for a in resultado["students"]}
+    assert por_numero == {
+        "122631": "Afonso Duarte Rosado Lopes",
+        "122625": "Afonso Ruas Mexia",
+        "122657": "Alexandre Campos Corgas Duarte",
+    }
+
+
+def test_numero_no_fim_do_nome_tambem_se_separa():
+    src = fonte("s1", "pauta.pdf", ["Óptica"],
+                [["Aluno", "Nota Final"],
+                 ["Afonso Duarte Rosado Lopes 122631", "15"],
+                 ["Afonso Ruas Mexia 122625", "13"]])
+    resultado = consolidate([src], Settings())
+    assert {a["student_id"] for a in resultado["students"]} == {"122631", "122625"}
+    assert all("122" not in a["name"] for a in resultado["students"])
+
+
+def test_numero_dentro_do_nome_sai_mesmo_havendo_coluna_de_numero():
+    src = fonte("s1", "pauta.pdf", ["Óptica"],
+                [["Número", "Nome", "Nota Final"],
+                 ["122631", "122631 Afonso Duarte Rosado Lopes", "15"]])
+    aluno = consolidate([src], Settings())["students"][0]
+    assert aluno["name"] == "Afonso Duarte Rosado Lopes"
+    assert aluno["student_id"] == "122631"
+
+
+# -- cadeiras criadas à mão -------------------------------------------------
+
+def test_criar_uma_cadeira_sem_pauta_nenhuma():
+    session = Session()
+    session.create_subject("Física Geral")
+    review = session.review()
+    assert review["subjects"] == ["Física Geral"]
+    assert review["subject_files"].get("Física Geral") is None
+    assert session.result()["subjects"] == ["Física Geral"]
+
+
+def test_cadeira_criada_a_mao_aguenta_o_arranque_seguinte():
+    session = Session()
+    session.create_subject("Física Geral")
+    session.update(settings={"subject_curriculum": {"Física Geral": {"year": 1}}})
+    outra = Session()
+    assert "Física Geral" in outra.review()["subjects"]
+    assert outra.review()["curriculum"]["Física Geral"]["year"] == 1
+
+
+def test_mudar_o_nome_a_uma_cadeira_criada_a_mao():
+    session = Session()
+    session.create_subject("Fisica")
+    session.rename_subject("Fisica", "Física Geral")
+    assert session.review()["subjects"] == ["Física Geral"]
+
+
+def test_apontar_um_ficheiro_a_uma_cadeira(sessao):
+    sessao.create_subject("Óptica")
+    sessao.assign_file("Redes.csv", "Óptica")
+    review = sessao.review()
+    assert review["subject_files"]["Óptica"] == ["Redes.csv"]
+    assert "Redes" not in review["subjects"]
+
+    # E dá para voltar atrás: sem nome, volta o que a detecção diz.
+    sessao.assign_file("Redes.csv", "")
+    assert "Redes" in sessao.review()["subjects"]
+
+
+def test_confirmar_uma_pauta_fica_guardado(sessao):
+    fonte_id = sessao.sources[0].id
+    sessao.confirm_source(fonte_id)
+    assert sessao.review()["confirmed_sources"] == [fonte_id]
+    assert Session().review()["confirmed_sources"] == [fonte_id]
+    sessao.confirm_source(fonte_id, False)
+    assert sessao.review()["confirmed_sources"] == []
+
+
+# -- ordem por ano e semestre ----------------------------------------------
+
+def test_cadeiras_ordenadas_por_ano_semestre_e_nome():
+    from gradeorg.consolidate import order_subjects, subject_groups
+    curriculo = {
+        "Redes": {"year": 2, "semester": 1},
+        "Álgebra": {"year": 1, "semester": 1},
+        "Análise": {"year": 1, "semester": 1},
+        "Óptica": {},
+        "Física": {"year": 1, "semester": 2},
+    }
+    ordem = order_subjects(list(curriculo), curriculo)
+    assert ordem == ["Álgebra", "Análise", "Física", "Redes", "Óptica"]
+
+    grupos = subject_groups(ordem, curriculo)
+    assert [(g["year"], g["semester"], g["subjects"]) for g in grupos] == [
+        (1, 1, ["Álgebra", "Análise"]),
+        (1, 2, ["Física"]),
+        (2, 1, ["Redes"]),
+        (None, None, ["Óptica"]),
+    ]
+
+
+def test_o_resultado_traz_as_cadeiras_agrupadas():
+    session = Session()
+    session.add_file("Redes.csv", REDES)
+    session.add_file("Algebra.csv", ALGEBRA)
+    session.update(settings={"subject_curriculum": {
+        "Redes": {"year": 2, "semester": 1},
+        "Algebra": {"year": 1, "semester": 1},
+    }})
+    resultado = session.result()
+    assert resultado["subjects"] == ["Algebra", "Redes"]
+    assert [g["year"] for g in resultado["subject_groups"]] == [1, 2]

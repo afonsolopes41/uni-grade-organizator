@@ -20,7 +20,8 @@ from typing import Optional
 from . import storage
 from .consolidate import (
     SPLIT, Settings, consolidate, detected_semesters, effective_curriculum,
-    merge_questions, resolve_subjects, subject_files, subject_keys, to_json,
+    merge_questions, order_subjects, resolve_subjects, subject_files,
+    subject_groups, subject_keys, to_json,
 )
 from .detect import apply_answers, apply_column_overrides, build_questions, build_source
 from .i18n import normalize_language, tr
@@ -277,6 +278,50 @@ class Session:
         names, _ = resolve_subjects(self.sources, self.settings)
         return names
 
+    def create_subject(self, name: str) -> None:
+        """Cria uma cadeira a mão, ainda sem pauta nenhuma."""
+        name = (name or "").strip()
+        if not name:
+            return
+        with self._lock:
+            if name not in self.settings.manual_subjects:
+                self.settings.manual_subjects = self.settings.manual_subjects + [name]
+            self.settings.removed_subjects = [
+                s for s in self.settings.removed_subjects if s != name]
+            self._dirty = True
+            self._save()
+
+    def assign_file(self, filename: str, subject: str) -> None:
+        """Diz a que cadeira pertencem as pautas de um ficheiro.
+
+        Um ficheiro pode ter várias tabelas (folhas, páginas); todas passam a
+        ser dessa cadeira. Com o nome vazio, volta o que a detecção diz.
+        """
+        subject = (subject or "").strip()
+        prefixos = tuple(f"f{f.order}s" for f in self.files if f.name == filename)
+        alvo = [s for s in self.sources if s.id.startswith(prefixos)] if prefixos else []
+        with self._lock:
+            for source in alvo:
+                key = f"{source.id}:subject"
+                if subject:
+                    self.answers[key] = subject
+                else:
+                    self.answers.pop(key, None)
+            if subject and subject not in self.settings.manual_subjects:
+                # A cadeira passa a existir por si, mesmo que se tire a pauta.
+                self.settings.manual_subjects = self.settings.manual_subjects + [subject]
+            self._dirty = True
+            self._save()
+
+    def confirm_source(self, source_id: str, confirmed: bool = True) -> None:
+        """Arruma (ou desarruma) uma pauta já conferida nos ajustes avançados."""
+        with self._lock:
+            current = [s for s in self.settings.confirmed_sources if s != source_id]
+            if confirmed and source_id:
+                current.append(source_id)
+            self.settings.confirmed_sources = sorted(current)
+            self._save()
+
     def rename_subject(self, old: str, new: str) -> None:
         """Muda o nome de uma cadeira, aqui e em tudo o que dependia dele."""
         new = (new or "").strip()
@@ -298,6 +343,9 @@ class Session:
                           self.settings.subject_curriculum):
                 if old in store:
                     store[new] = store.pop(old)
+            if old in self.settings.manual_subjects:
+                self.settings.manual_subjects = [
+                    new if s == old else s for s in self.settings.manual_subjects]
             if old in self.settings.removed_subjects:
                 self.settings.removed_subjects = [
                     new if s == old else s for s in self.settings.removed_subjects]
@@ -341,8 +389,11 @@ class Session:
     def review(self) -> dict:
         lang = self.language
         names, _ = resolve_subjects(self.sources, self.settings)
-        subjects = sorted(set(names.values()))
         semesters = detected_semesters(self.sources, names)
+        conhecidas = set(names.values()) | set(self.settings.manual_subjects)
+        curriculum = {s: effective_curriculum(s, self.settings, semesters)
+                      for s in conhecidas}
+        subjects = order_subjects(sorted(conhecidas), curriculum)
         codes: dict = {}
         for source in self.sources:
             subject = names.get(source.id)
@@ -357,13 +408,15 @@ class Session:
             "overrides": self.overrides,
             "settings": self.settings.to_dict(),
             "subjects": subjects,
+            "subject_groups": subject_groups(subjects, curriculum),
             "subject_codes": codes,
             "subject_files": subject_files(self.sources, names),
             "removed_subjects": sorted(self.settings.removed_subjects),
             # Semestre que a própria pauta indica, para preencher por omissão.
             "detected_semesters": semesters,
-            "curriculum": {s: effective_curriculum(s, self.settings, semesters)
-                           for s in subjects},
+            "curriculum": curriculum,
+            "manual_subjects": list(self.settings.manual_subjects),
+            "confirmed_sources": list(self.settings.confirmed_sources),
             "pass_marks": {s: self.settings.pass_mark_for(s) for s in subjects},
             "courses": {s: self.settings.course_for(s) for s in subjects},
         }
@@ -380,6 +433,13 @@ class Session:
         payload["questions"] = [q.to_dict(lang) for q in self.open_questions()]
         payload["answers"] = self.answers
         return payload
+
+    def file_for_source(self, source_id: str):
+        """O ficheiro de onde veio esta fonte -- para o poder abrir na página."""
+        for uploaded in self.files:
+            if source_id.startswith(f"f{uploaded.order}s"):
+                return uploaded
+        return None
 
     def source_labels(self) -> list:
         return [f.name for f in self.files]
