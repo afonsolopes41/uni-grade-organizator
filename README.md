@@ -77,7 +77,7 @@ confiança a cada conclusão.
 | Colunas de um PDF | Tenta a grelha desenhada **e** a reconstrução por posições, e fica com a que produzir a tabela mais cheia |
 | Cabeçalhos em várias linhas | `Test 1` numa linha e `30%` na de baixo são o mesmo cabeçalho |
 | Nome e número de aluno | Cabeçalho (`Nome`, `Nº Aluno`, `Number`, `Name`…) e, se não bastar, a forma dos valores |
-| Número e nome na mesma coluna | `122631 Ana Silva`, `Ana Silva - 122631`, `nº 122631/Ana Silva`: a coluna passa a ser o nome e o número sai de lá para fora |
+| Número e nome na mesma coluna | `122631 Ana Silva`, `Ana Silva - 122631`, `nº 122631/Ana Silva` e até `122631Ana Silva` sem espaço nenhum: a coluna passa a ser o nome e o número sai de lá para fora |
 | Número e nome colados num PDF | Quando estão a quatro pontos um do outro — menos do que separa duas colunas — separam-se na mesma: à esquerda números de aluno, à direita nomes (ver abaixo) |
 | A via do exame | Uma coluna `Exame` preenchida **só** para quem tem a `Nota final` vazia é a outra via da mesma época, não um componente |
 | Notas | Números, mas também `RE`, `NA`, `FA`, `f`, `m`, `d`, `RE m`, `Aprovado`, `-`, `13,25`, `13.25`, `85%`, `15/20` |
@@ -515,7 +515,7 @@ nota mínima por cadeira), a identidade das cadeiras pelo código, as médias po
 semestre, ano e curso, a gestão das cadeiras (criar, mudar o nome, apagar,
 repor, apontar ficheiros, origem), as cadeiras de um curso contra as comuns, o
 arredondamento da nota final, a ordem por ano e semestre, o número e o nome na
-mesma coluna em dez formatos diferentes, a memória entre arranques, as duas
+mesma coluna em onze formatos diferentes, a memória entre arranques, as duas
 línguas (incluindo a garantia de que nenhuma chave fica por traduzir), a via do
 exame reconhecida pelo preenchimento, a junção de alunos, a escolha da melhor
 nota, os conflitos entre versões, as notas corrigidas à mão (incluindo o efeito

@@ -116,6 +116,7 @@ def test_grade_label():
     "nº 122631 Afonso Duarte Rosado Lopes",
     "Afonso Duarte Rosado Lopes - 122631",
     "122631  Afonso   Duarte Rosado Lopes",
+    "122631Afonso Duarte Rosado Lopes",   # colados, sem espaço nenhum
 ])
 def test_separa_o_numero_do_nome_em_varios_formatos(celula):
     numero, nome = split_id_from_name(celula)
@@ -129,11 +130,18 @@ def test_separa_o_numero_do_nome_em_varios_formatos(celula):
     "13,25 15,5",                   # duas notas
     "2024 15",                      # não é nome nenhum
     "Turma ET-C9",
+    "12345abc def",                 # colado a minúscula: não é nome a começar
 ])
 def test_nao_separa_o_que_nao_e_numero_mais_nome(celula):
     assert split_id_from_name(celula)[0] is None
 
 
+def test_separa_o_numero_do_nome_colado_com_acento():
+    """A maiúscula que abre o nome é o corte, acentuada ou não."""
+    assert split_id_from_name("110641Ávila Nunes Pinto") == ("110641", "Ávila Nunes Pinto")
+
+
 def test_reconhece_a_celula_com_numero_e_nome():
     assert looks_like_id_and_name("122631 Afonso Duarte Rosado Lopes")
+    assert looks_like_id_and_name("122631Afonso Duarte Rosado Lopes")
     assert not looks_like_id_and_name("Afonso Duarte Rosado Lopes")

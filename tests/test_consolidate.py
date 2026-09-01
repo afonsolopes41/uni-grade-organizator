@@ -15,6 +15,26 @@ def student(result, name):
     return next(s for s in result["students"] if s["name"] == name)
 
 
+# -- número e nome na mesma coluna ----------------------------------------
+
+def test_numero_colado_ao_nome_na_mesma_coluna():
+    """Há pautas em PDF onde o número sai colado ao nome, sem espaço nenhum.
+
+    As duas colunas estão encostadas no documento e saem como uma palavra só:
+    «110641Afonso da Silva Maia». Sem separar, o número perdia-se e o nome
+    ficava com os dígitos lá dentro.
+    """
+    src = make_source([
+        ["Nº Nome", "Nota Final"],
+        ["110641Afonso da Silva Maia", "12"],
+        ["87900Tomás Morais Andrade Rosa", "14"],
+    ])
+    result = consolidate([src])
+    alunos = {s["name"]: s["student_id"] for s in result["students"]}
+    assert alunos == {"Afonso da Silva Maia": "110641",
+                      "Tomás Morais Andrade Rosa": "87900"}
+
+
 # -- melhor nota -----------------------------------------------------------
 
 def test_segunda_epoca_recupera_um_reprovado():
