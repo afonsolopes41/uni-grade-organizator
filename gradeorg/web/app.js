@@ -902,9 +902,52 @@ function averageOf(student, subjects) {
   return num((valores.reduce((a, b) => a + b, 0) / valores.length).toFixed(2));
 }
 
+/* ------------------------------------------ ordem dos seleccionados */
+
+/* Quem está seleccionado sobe ao topo, pela ordem por que foi seleccionado.
+   Essa ordem não precisa de sítio próprio: um Set guarda a ordem em que as
+   chaves lhe entraram, e arrastar uma linha volta a construí-lo pela ordem
+   nova -- o resto da aplicação continua a ver o mesmo `state.selected`. */
+function orderedStudents(students) {
+  if (!state.selected.size) return students;
+  const posicao = new Map([...state.selected].map((key, i) => [key, i]));
+  const fixados = students.filter((s) => posicao.has(s.key));
+  const resto = students.filter((s) => !posicao.has(s.key));
+  fixados.sort((a, b) => posicao.get(a.key) - posicao.get(b.key));
+  return fixados.concat(resto);
+}
+
+/* Põe `key` antes ou depois de `alvo`. Os seleccionados que o filtro não
+   mostra continuam onde estavam: a ordem é uma só, a tabela é uma vista. */
+function moveSelected(key, alvo, depois) {
+  if (!key || key === alvo) return;
+  const ordem = [...state.selected];
+  const de = ordem.indexOf(key);
+  if (de < 0) return;
+  ordem.splice(de, 1);
+  const para = ordem.indexOf(alvo);
+  if (para < 0) return;
+  ordem.splice(depois ? para + 1 : para, 0, key);
+  state.selected = new Set(ordem);
+}
+
+/* Um lugar para cima ou para baixo, para quem não quer arrastar. O vizinho
+   é o seleccionado seguinte *à vista*: com o filtro da procura por cima,
+   trocar de lugar com alguém que não está na tabela não mexia nada. */
+function nudgeSelected(key, passo) {
+  const vista = orderedStudents(filteredStudents())
+    .filter((s) => state.selected.has(s.key)).map((s) => s.key);
+  const de = vista.indexOf(key);
+  const para = de + passo;
+  if (de < 0 || para < 0 || para >= vista.length) return false;
+  moveSelected(key, vista[para], passo > 0);
+  return true;
+}
+
 function renderTable() {
   const subjects = visibleSubjects();
-  const students = filteredStudents();
+  const students = orderedStudents(filteredStudents());
+  const fixados = students.filter((s) => state.selected.has(s.key)).length;
   const curriculum = state.results?.curriculum || {};
 
   const grupos = groupsOf(subjects);
@@ -947,8 +990,10 @@ function renderTable() {
         averageOf(student, doAno.get(ano))}</td>`).join('');
 
     const open = state.openRows.has(student.key);
+    const fixado = state.selected.has(student.key);
     return `
-      <tr class="${open ? 'is-open' : ''} ${indice % 2 ? 'impar' : 'par'}"
+      <tr class="${open ? 'is-open' : ''} ${indice % 2 ? 'impar' : 'par'}${
+        fixado ? ' fixado' : ''}${indice === fixados - 1 ? ' ultimo-fixado' : ''}"
           data-key="${escapeHtml(student.key)}">
         <td><input type="checkbox" data-select="${escapeHtml(student.key)}"
                    ${state.selected.has(student.key) ? 'checked' : ''}
@@ -956,6 +1001,11 @@ function renderTable() {
         <td class="student-id">${escapeHtml(student.student_id || '—')}</td>
         <td>
           <div class="name-cell">
+            ${fixado ? `<button class="grip" draggable="true"
+                    data-grip="${escapeHtml(student.key)}"
+                    title="${escapeHtml(t('results.reorder'))}"
+                    aria-label="${escapeHtml(t('results.reorder_student', { name: student.name }))}"
+                    >⠿</button>` : ''}
             <button class="toggle" data-toggle="${escapeHtml(student.key)}"
                     aria-label="${escapeHtml(t('results.detail'))}">▸</button>
             <span class="student-name">${escapeHtml(student.name)}</span>
@@ -988,8 +1038,7 @@ function renderTable() {
     box.addEventListener('change', () => {
       if (box.checked) state.selected.add(box.dataset.select);
       else state.selected.delete(box.dataset.select);
-      $('selected-count').textContent = state.selected.size;
-      if (state.onlySelected) renderTable();
+      renderTable();
     });
   });
   $('grades-body').querySelectorAll('[data-drop]').forEach((button) => {
@@ -997,6 +1046,77 @@ function renderTable() {
   });
   $('grades-body').querySelectorAll('.grade-cell').forEach((cell) => {
     cell.addEventListener('click', () => editGrade(cell));
+  });
+  wireReorder();
+}
+
+/* Arrastar pela pega, e não pela linha inteira: a linha tem caixas de texto
+   para corrigir notas, e uma linha arrastável não deixa escolher o que lá
+   está escrito. Só as linhas seleccionadas se movem -- as outras estão pela
+   ordem que vem das pautas e não há ordem manual para lhes dar. */
+function wireReorder() {
+  const corpo = $('grades-body');
+  let aArrastar = null;
+
+  const limpar = () => corpo.querySelectorAll('.alvo-cima, .alvo-baixo')
+    .forEach((linha) => linha.classList.remove('alvo-cima', 'alvo-baixo'));
+
+  const foco = (key) => {
+    const pega = [...corpo.querySelectorAll('[data-grip]')]
+      .find((p) => p.dataset.grip === key);
+    if (pega) pega.focus();
+  };
+
+  corpo.querySelectorAll('[data-grip]').forEach((pega) => {
+    const linha = pega.closest('tr');
+    pega.addEventListener('dragstart', (event) => {
+      aArrastar = pega.dataset.grip;
+      event.dataTransfer.effectAllowed = 'move';
+      event.dataTransfer.setData('text/plain', aArrastar);
+      event.dataTransfer.setDragImage(linha, 16, 14);
+      linha.classList.add('a-arrastar');
+    });
+    pega.addEventListener('dragend', () => {
+      aArrastar = null;
+      linha.classList.remove('a-arrastar');
+      limpar();
+    });
+    pega.addEventListener('keydown', (event) => {
+      const passo = event.key === 'ArrowUp' ? -1 : event.key === 'ArrowDown' ? 1 : 0;
+      if (!passo) return;
+      event.preventDefault();
+      const key = pega.dataset.grip;
+      if (!nudgeSelected(key, passo)) return;
+      renderTable();
+      foco(key);
+    });
+  });
+
+  corpo.querySelectorAll('tr.fixado').forEach((linha) => {
+    linha.addEventListener('dragover', (event) => {
+      if (!aArrastar || linha.dataset.key === aArrastar) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'move';
+      const caixa = linha.getBoundingClientRect();
+      const depois = event.clientY > caixa.top + caixa.height / 2;
+      limpar();
+      linha.classList.add(depois ? 'alvo-baixo' : 'alvo-cima');
+    });
+    linha.addEventListener('dragleave', (event) => {
+      if (!linha.contains(event.relatedTarget))
+        linha.classList.remove('alvo-cima', 'alvo-baixo');
+    });
+    linha.addEventListener('drop', (event) => {
+      if (!aArrastar) return;
+      event.preventDefault();
+      const depois = linha.classList.contains('alvo-baixo');
+      const key = aArrastar;
+      aArrastar = null;
+      limpar();
+      moveSelected(key, linha.dataset.key, depois);
+      renderTable();
+      foco(key);
+    });
   });
 }
 

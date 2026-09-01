@@ -159,6 +159,39 @@ def test_selecao_de_alunos_e_de_ucs(tmp_path):
     assert "Rui Costa Lopes" not in nomes
 
 
+def test_ordem_da_seleccao_manda_na_folha():
+    """A folha sai pela ordem em que os alunos foram postos na tabela."""
+    src = build_source("s1", "pauta.pdf", "pdf", RawTable(
+        rows=[["Nome", "Nº Aluno", "Nota Final"],
+              ["Ana Maria Silva", "112233", "15"],
+              ["Rui Costa Lopes", "112234", "12"],
+              ["Ines Santos Dias", "112235", "14"]],
+        title_lines=["Análise Matemática - Pauta"]))
+    result = consolidate([src])
+
+    book = build_workbook(result, ["pauta.pdf"],
+                          selected_students=["id:112235", "id:112233", "id:112234"])
+    sheet = book["Análise Matemática"]
+    nomes = [sheet.cell(row=r, column=2).value
+             for r in range(SUBJECT_HEADER_ROW + 1, SUBJECT_HEADER_ROW + 4)]
+    assert nomes == ["Ines Santos Dias", "Ana Maria Silva", "Rui Costa Lopes"]
+
+
+def test_ordem_da_seleccao_tambem_pelo_nome():
+    """Quem for escolhido pelo nome entra no mesmo lugar que a chave daria."""
+    src = build_source("s1", "pauta.pdf", "pdf", RawTable(
+        rows=[["Nome", "Nº Aluno", "Nota Final"],
+              ["Ana Maria Silva", "112233", "15"],
+              ["Rui Costa Lopes", "112234", "12"]],
+        title_lines=["Análise Matemática - Pauta"]))
+    book = build_workbook(consolidate([src]), ["pauta.pdf"],
+                          selected_students=["Rui Costa Lopes", "id:112233"])
+    sheet = book["Análise Matemática"]
+    nomes = [sheet.cell(row=r, column=2).value
+             for r in range(SUBJECT_HEADER_ROW + 1, SUBJECT_HEADER_ROW + 3)]
+    assert nomes == ["Rui Costa Lopes", "Ana Maria Silva"]
+
+
 def test_uc_sem_alunos_seleccionados_nao_gera_folha():
     a = build_source("s1", "a.pdf", "pdf", RawTable(
         rows=[["Nome", "Nº Aluno", "Nota Final"], ["Ana Maria Silva", "112233", "15"]],

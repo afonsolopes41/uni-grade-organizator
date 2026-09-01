@@ -181,8 +181,20 @@ def build_workbook(result: dict, source_labels: Optional[list] = None,
 
     students = result["students"]
     if selected_students:
-        wanted = {s for s in selected_students}
-        students = [s for s in students if s["key"] in wanted or s["name"] in wanted]
+        # A ordem da seleccao manda: e a que o utilizador poe na tabela,
+        # arrastando os alunos, e a folha tem de sair como a tabela esta.
+        ordem = {chave: i for i, chave in enumerate(selected_students)}
+        fim = len(ordem)
+
+        def lugar(student: dict) -> int:
+            posicao = ordem.get(student["key"])
+            if posicao is None:
+                posicao = ordem.get(student["name"])
+            return fim if posicao is None else posicao
+
+        students = [s for s in students
+                    if s["key"] in ordem or s["name"] in ordem]
+        students.sort(key=lugar)
     subjects = list(result["subjects"])
     if selected_subjects:
         subjects = [s for s in subjects if s in set(selected_subjects)]
