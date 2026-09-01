@@ -185,8 +185,15 @@ def parse_student_id(value: Any) -> Optional[str]:
 #: celula: espaco, mas tambem "-", "|", "/", ":" e companhia, com ou sem espaco.
 _ID_NAME_SEP = r"(?:\s*[-–—.:|/]\s*|\s+)"
 _ID_PREFIX = r"(?:n\.?[ºo°]?\s*)?"
+#: Ha pautas em que o numero sai colado ao nome, sem separador nenhum
+#: ("110641Afonso da Silva Maia"): no PDF as duas colunas estao encostadas e
+#: saem como uma palavra so. O que marca o corte e a maiuscula que abre o
+#: nome -- por isso este `(?-i:...)`, que tira o IGNORECASE do resto do
+#: padrao: com ele, "12345abc" tambem passava.
+_ID_NAME_GLUED = r"(?=(?-i:[A-ZÀ-ÖØ-Þ]))"
 _ID_THEN_NAME = re.compile(
-    rf"^{_ID_PREFIX}(\d{{4,12}}){_ID_NAME_SEP}(\D.+)$", re.IGNORECASE)
+    rf"^{_ID_PREFIX}(\d{{4,12}})(?:{_ID_NAME_SEP}|{_ID_NAME_GLUED})(\D.+)$",
+    re.IGNORECASE)
 _NAME_THEN_ID = re.compile(
     rf"^(.+?\D){_ID_NAME_SEP}{_ID_PREFIX}(\d{{4,12}})$", re.IGNORECASE)
 
