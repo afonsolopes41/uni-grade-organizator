@@ -282,12 +282,20 @@ perguntas, as razões da detecção, os avisos, os conflitos, os estados das not
 (`Reprovado` / `Failed`), os nomes das épocas (`2.ª Época` / `2nd Season`) e
 **também o Excel** — folhas, cabeçalhos e textos. A escolha fica guardada.
 
+## Tema claro e tema escuro
+
+O botão redondo ao lado do **PT / EN** troca entre claro e escuro. Quem nunca
+tocar nele fica com o tema do sistema, e acompanha-o em directo se o sistema
+mudar de tema a meio. A escolha fica guardada como o resto — e é aplicada antes
+de a página pintar seja o que for, para abrir já certa em vez de piscar a branco
+primeiro.
+
 ## Memória
 
 A aplicação lembra-se do que se estava a fazer. Fecha-se e volta a abrir-se com
 tudo como ficou: os ficheiros carregados, as respostas às perguntas, os ajustes
-de colunas, os nomes das cadeiras, o plano de estudos, as notas mínimas e a
-língua.
+de colunas, os nomes das cadeiras, o plano de estudos, as notas mínimas, as
+notas corrigidas à mão, os alunos que foram tirados, o tema e a língua.
 
 Fica tudo numa pasta do utilizador — `%APPDATA%\OrganizadorDeNotas` no Windows,
 `~/Library/Application Support/OrganizadorDeNotas` no macOS,
@@ -302,11 +310,18 @@ tabelas/      as tabelas já extraídas, para o arranque ser imediato
 Só o botão **Apagar tudo** limpa (com confirmação). Se o estado guardado estiver
 estragado, a aplicação arranca vazia em vez de rebentar.
 
+**Reparar que essa pasta não é a do projecto.** Apagar o projecto do computador
+e voltar a descarregá-lo não apaga a memória: o código e os dados vivem em
+sítios diferentes de propósito, para uma actualização do programa não deitar
+fora o trabalho já feito. Para começar mesmo do zero, ou se usa o botão **Apagar
+tudo**, ou apaga a pasta acima à mão.
+
 ## Semestres, anos e médias
 
 Na página, a tabela **Unidades curriculares** pede o **ano** e o **semestre** de
-cada cadeira, e opcionalmente os **ECTS**. O semestre vem já preenchido quando a
-pauta o diz — só é preciso escrever o que falta.
+cada cadeira, e opcionalmente os **ECTS** (sempre um número inteiro — o campo
+anda de um em um). O semestre vem já preenchido quando a pauta o diz — só é
+preciso escrever o que falta.
 
 Com isso saem, por aluno:
 
@@ -359,6 +374,44 @@ linha a mais na página — ocupa o lugar que os filtros já ocupavam.
 No Excel, o Resumo ganha as mesmas duas linhas por baixo de cada coluna de UC —
 **Média da UC** e **Aprovados** (`46/65`) — em fórmula, e seguindo a nota mínima
 dessa cadeira.
+
+## Ler a tabela sem perder o fio
+
+Com trinta cadeiras à frente, uma tabela de notas deixa de se ler. Três coisas
+resolvem isso:
+
+* O **cabeçalho não desaparece**. A caixa da tabela é que rola, e a faixa com o
+  ano e o semestre e a linha com os nomes das cadeiras ficam coladas ao topo
+  dela — por baixo há sempre a indicação de que coluna se está a ver.
+* **Linha sim, linha não** num tom diferente, para o olho não saltar de linha a
+  meio caminho.
+* Uma **média por ano** por aluno, num bloco à parte no fim da linha, à frente
+  da média geral. É a média das notas finais das cadeiras desse ano que estão à
+  vista: esconder a coluna de uma UC ou corrigir uma nota muda-a logo. (As
+  médias rigorosas — ponderadas por ECTS e só com as cadeiras aprovadas, por
+  semestre, por ano e de curso — continuam no detalhe de cada aluno, que abre no
+  triângulo ao lado do nome.)
+
+## Corrigir uma nota à mão
+
+Clicar numa nota abre-a para escrita ali mesmo. `Enter` grava, `Escape` desiste,
+deixar em branco volta à nota que a pauta trazia. A nota corrigida **manda**: é
+ela que conta para a aprovação, para as médias por ano, para a média de curso e
+para as estatísticas da cadeira. Fica marcada com um anel e um ponto, e a dica
+do rato diz o que a pauta dizia antes.
+
+Também serve para **acrescentar** uma nota que falta: corrigir uma cadeira em
+que o aluno não tinha nada cria-lhe a nota.
+
+No Excel, uma nota corrigida vai como valor e não como a fórmula que lê a melhor
+das épocas — senão a folha voltava atrás e mostrava outra vez a nota da pauta —,
+e a coluna de origem diz «corrigido à mão».
+
+## Tirar um aluno da pauta final
+
+O **✕** ao lado do nome tira o aluno da listagem, das médias e do Excel (pede
+confirmação). Fica uma faixa por baixo da tabela com os que saíram e um botão
+para os repor — os ficheiros não são tocados.
 
 ## Nota mínima por cadeira
 
@@ -429,7 +482,7 @@ gradeorg/
   app.py           API JSON + página
   server.py        arranque e abertura do navegador
   web/             index.html · style.css · app.js · i18n.js
-tests/             305 testes
+tests/             320 testes
 ```
 
 ## Testes
@@ -451,8 +504,10 @@ arredondamento da nota final, a ordem por ano e semestre, o número e o nome na
 mesma coluna em dez formatos diferentes, a memória entre arranques, as duas
 línguas (incluindo a garantia de que nenhuma chave fica por traduzir), a via do
 exame reconhecida pelo preenchimento, a junção de alunos, a escolha da melhor
-nota, os conflitos entre versões, o Excel gerado (valores, fórmulas e o conjunto
-de funções seguras) e o percurso completo pela API.
+nota, os conflitos entre versões, as notas corrigidas à mão (incluindo o efeito
+nas médias e nas estatísticas da cadeira), os alunos tirados da pauta final, o
+Excel gerado (valores, fórmulas e o conjunto de funções seguras) e o percurso
+completo pela API.
 
 ## Formatos aceites
 

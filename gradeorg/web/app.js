@@ -67,6 +67,7 @@ async function switchLanguage(code) {
   try { localStorage.setItem('gradeorg.lang', code); } catch (error) { /* privado */ }
   paintLanguage();
   applyStaticText();
+  paintTheme();
   busy(true, t('busy.applying'));
   try {
     state.review = await postJSON('/api/language', { language: code });
@@ -81,6 +82,49 @@ function paintLanguage() {
   document.querySelectorAll('#lang button').forEach((button) => {
     button.classList.toggle('is-on', button.dataset.lang === LANG);
   });
+}
+
+/* --------------------------------------------------------------- tema */
+
+/* Três estados: claro, escuro, ou nenhum -- e nenhum quer dizer "o que o
+   sistema estiver a usar". A escolha vive na sessão do servidor, como a
+   língua; o localStorage é só para a página abrir já pintada. */
+
+const systemPrefersDark = () =>
+  window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+
+const isDark = () => {
+  const escolhido = document.documentElement.dataset.theme;
+  if (escolhido === 'dark') return true;
+  if (escolhido === 'light') return false;
+  return systemPrefersDark();
+};
+
+function applyTheme(theme) {
+  const raiz = document.documentElement;
+  if (theme === 'light' || theme === 'dark') raiz.dataset.theme = theme;
+  else delete raiz.dataset.theme;
+  paintTheme();
+}
+
+function paintTheme() {
+  const botao = $('theme-toggle');
+  if (!botao) return;
+  const escuro = isDark();
+  const rotulo = escuro ? t('theme.to_light') : t('theme.to_dark');
+  botao.setAttribute('aria-pressed', String(escuro));
+  botao.setAttribute('aria-label', rotulo);
+  botao.title = rotulo;
+}
+
+function toggleTheme() {
+  const proximo = isDark() ? 'light' : 'dark';
+  applyTheme(proximo);
+  try { localStorage.setItem('gradeorg.theme', proximo); } catch (error) { /* privado */ }
+  // Guarda-se em surdina: mudar de tema não tem de recarregar nada.
+  postJSON('/api/answers', { settings: { theme: proximo } })
+    .then((data) => { state.review = data; })
+    .catch(() => {});
 }
 
 /* ------------------------------------------------------------- navegação */
@@ -422,7 +466,7 @@ function renderCurriculum() {
           </select>
         </td>
         <td class="num">
-          <input type="number" min="0" max="60" step="0.5" placeholder="—"
+          <input type="number" min="0" max="60" step="1" placeholder="—"
                  value="${meta.ects ?? ''}" data-uc="${escapeHtml(subject)}" data-campo="ects">
         </td>
         <td class="num">
@@ -836,17 +880,46 @@ function filteredStudents() {
   });
 }
 
+/* Os anos que a tabela mostra, tirados das cadeiras visíveis. Uma cadeira sem
+   ano não entra em média nenhuma por ano -- só na média geral da linha. */
+function yearsOf(subjects) {
+  const curriculum = state.results?.curriculum || {};
+  const anos = [];
+  for (const subject of subjects) {
+    const year = curriculum[subject]?.year;
+    if (year != null && !anos.includes(year)) anos.push(year);
+  }
+  return anos.sort((a, b) => a - b);
+}
+
+/* Média das notas finais que o aluno tem nestas cadeiras. É a média do que
+   está à vista: esconder uma coluna ou corrigir uma nota muda-a logo. */
+function averageOf(student, subjects) {
+  const valores = subjects
+    .map((s) => student.subjects[s]?.best_rounded)
+    .filter((v) => typeof v === 'number');
+  if (!valores.length) return '—';
+  return num((valores.reduce((a, b) => a + b, 0) / valores.length).toFixed(2));
+}
+
 function renderTable() {
   const subjects = visibleSubjects();
   const students = filteredStudents();
+  const curriculum = state.results?.curriculum || {};
 
   const grupos = groupsOf(subjects);
   const temGrupos = grupos.some((g) => g.year != null || g.semester != null);
+  const anos = yearsOf(subjects);
+  const doAno = new Map(anos.map((ano) =>
+    [ano, subjects.filter((s) => curriculum[s]?.year === ano)]));
+
   const linhaGrupos = temGrupos ? `
     <tr class="group-row">
       <th colspan="3"></th>
       ${grupos.map((g) => `<th class="group" colspan="${g.subjects.length}">${
         escapeHtml(groupLabel(g))}</th>`).join('')}
+      ${anos.length ? `<th class="group grupo-anos" colspan="${anos.length}">${
+        escapeHtml(t('results.col.year_averages'))}</th>` : ''}
       <th></th>
     </tr>` : '';
 
@@ -857,23 +930,26 @@ function renderTable() {
       <th style="width:92px">${escapeHtml(t('results.col.id'))}</th>
       <th class="who">${escapeHtml(t('results.col.student'))}</th>
       ${subjects.map((s) => `<th class="num">${escapeHtml(s)}</th>`).join('')}
+      ${anos.map((ano, i) => `<th class="num media-ano ${i ? '' : 'inicio-anos'}">${
+        escapeHtml(t('results.col.year', { year: ano }))}</th>`).join('')}
       <th class="num" style="width:92px">${escapeHtml(t('results.col.average'))}</th>
     </tr>`;
 
-  $('grades-body').innerHTML = students.map((student) => {
-    const cells = subjects.map((subject) =>
-      `<td class="num">${gradePill(student.subjects[subject])}</td>`).join('');
+  $('grades-body').innerHTML = students.map((student, indice) => {
+    const cells = subjects.map((subject) => `
+      <td class="num grade-cell" data-grade="${escapeHtml(student.key)}"
+          data-subject="${escapeHtml(subject)}"
+          title="${escapeHtml(t('grade.edit'))}">${
+        gradePill(student.subjects[subject])}</td>`).join('');
 
-    const values = subjects
-      .map((s) => student.subjects[s]?.best_rounded)
-      .filter((v) => typeof v === 'number');
-    const average = values.length
-      ? num((values.reduce((a, b) => a + b, 0) / values.length).toFixed(2))
-      : '—';
+    const medias = anos.map((ano, i) =>
+      `<td class="num media-ano ${i ? '' : 'inicio-anos'}">${
+        averageOf(student, doAno.get(ano))}</td>`).join('');
 
     const open = state.openRows.has(student.key);
     return `
-      <tr class="${open ? 'is-open' : ''}" data-key="${escapeHtml(student.key)}">
+      <tr class="${open ? 'is-open' : ''} ${indice % 2 ? 'impar' : 'par'}"
+          data-key="${escapeHtml(student.key)}">
         <td><input type="checkbox" data-select="${escapeHtml(student.key)}"
                    ${state.selected.has(student.key) ? 'checked' : ''}
                    aria-label="${escapeHtml(student.name)}"></td>
@@ -883,16 +959,22 @@ function renderTable() {
             <button class="toggle" data-toggle="${escapeHtml(student.key)}"
                     aria-label="${escapeHtml(t('results.detail'))}">▸</button>
             <span class="student-name">${escapeHtml(student.name)}</span>
+            <button class="drop-student" data-drop="${escapeHtml(student.key)}"
+                    title="${escapeHtml(t('results.remove_student', { name: student.name }))}"
+                    aria-label="${escapeHtml(t('results.remove_student', { name: student.name }))}"
+                    >✕</button>
           </div>
         </td>
         ${cells}
-        <td class="num strong">${average}</td>
+        ${medias}
+        <td class="num strong">${averageOf(student, subjects)}</td>
       </tr>
-      ${open ? detailRow(student, subjects) : ''}`;
+      ${open ? detailRow(student, subjects, anos.length) : ''}`;
   }).join('');
 
   $('no-rows').hidden = students.length > 0;
   $('selected-count').textContent = state.selected.size;
+  renderRemovedStudents();
 
   $('grades-body').querySelectorAll('[data-toggle]').forEach((button) => {
     button.addEventListener('click', () => {
@@ -910,6 +992,114 @@ function renderTable() {
       if (state.onlySelected) renderTable();
     });
   });
+  $('grades-body').querySelectorAll('[data-drop]').forEach((button) => {
+    button.addEventListener('click', () => dropStudent(button.dataset.drop));
+  });
+  $('grades-body').querySelectorAll('.grade-cell').forEach((cell) => {
+    cell.addEventListener('click', () => editGrade(cell));
+  });
+}
+
+/* ------------------------------------------------------- corrigir a nota */
+
+/* A célula transforma-se numa caixa de texto no sítio. Enter grava, Escape
+   desiste, sair da caixa grava também -- é o que se espera de uma tabela. */
+function editGrade(cell) {
+  if (cell.querySelector('input')) return;
+  const key = cell.dataset.grade;
+  const subject = cell.dataset.subject;
+  const data = (state.results.students.find((s) => s.key === key) || {})
+    .subjects?.[subject];
+  const maximo = state.results.settings?.scale || 20;
+
+  const antes = cell.innerHTML;
+  const atual = data?.best?.value;
+  cell.classList.add('is-editing');
+  cell.innerHTML = `<input class="grade-input" type="text" inputmode="decimal"
+    value="${atual != null ? escapeHtml(num(atual)) : ''}"
+    title="${escapeHtml(t('grade.clear_edit'))}">`;
+
+  const caixa = cell.querySelector('input');
+  caixa.focus();
+  caixa.select();
+
+  let fechado = false;
+  const desistir = () => {
+    if (fechado) return;
+    fechado = true;
+    cell.classList.remove('is-editing');
+    cell.innerHTML = antes;
+  };
+
+  const gravar = async () => {
+    if (fechado) return;
+    const escrito = caixa.value.trim();
+    if (escrito !== '') {
+      const valor = parseFloat(escrito.replace(',', '.'));
+      if (!Number.isFinite(valor) || valor < 0 || valor > maximo) {
+        toast(t('grade.invalid', { max: num(maximo) }), true);
+        caixa.focus();
+        return;
+      }
+    }
+    fechado = true;
+    busy(true, t('busy.applying'));
+    try {
+      state.results = await postJSON('/api/students', {
+        action: 'edit_grade', key, subject, value: escrito,
+      });
+      renderResults();
+    } catch (error) {
+      toast(error.message, true);
+      cell.classList.remove('is-editing');
+      cell.innerHTML = antes;
+    } finally { busy(false); }
+  };
+
+  caixa.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') { event.preventDefault(); gravar(); }
+    else if (event.key === 'Escape') { event.preventDefault(); desistir(); }
+  });
+  caixa.addEventListener('blur', gravar);
+  caixa.addEventListener('click', (event) => event.stopPropagation());
+}
+
+/* --------------------------------------------- tirar e repor alunos */
+
+async function dropStudent(key) {
+  const student = (state.results.students || []).find((s) => s.key === key);
+  if (!student) return;
+  if (!window.confirm(t('results.confirm_remove', { name: student.name }))) return;
+  await studentAction({ action: 'remove', key });
+}
+
+async function studentAction(body) {
+  busy(true, t('busy.applying'));
+  try {
+    state.results = await postJSON('/api/students', body);
+    state.selected.delete(body.key);
+    state.openRows.delete(body.key);
+    renderResults();
+  } catch (error) { toast(error.message, true); } finally { busy(false); }
+}
+
+function renderRemovedStudents() {
+  const fora = state.results?.removed_students || [];
+  const caixa = $('dropped-students');
+  if (!caixa) return;
+  if (!fora.length) { caixa.innerHTML = ''; return; }
+  caixa.innerHTML = `
+    <p class="removed-strip"><b>${escapeHtml(t('results.removed_students'))}</b>
+      ${fora.map((aluno) => `
+        <span class="removed-tag"><s>${escapeHtml(aluno.name)}</s>
+          <button data-restore-student="${escapeHtml(aluno.key)}">${
+            escapeHtml(t('results.restore_student'))}</button>
+        </span>`).join('')}
+    </p>`;
+  caixa.querySelectorAll('[data-restore-student]').forEach((button) => {
+    button.addEventListener('click', () =>
+      studentAction({ action: 'restore', key: button.dataset.restoreStudent }));
+  });
 }
 
 function gradePill(data) {
@@ -920,14 +1110,21 @@ function gradePill(data) {
     : data.best_epoca === 'especial' ? 'E' : '';
   // A nota que fica é a arredondada; a da pauta aparece na dica e no detalhe.
   const nota = data.best_rounded != null ? String(data.best_rounded) : data.best.label;
-  const dica = data.best_rounded != null && data.best.label !== nota
+  let dica = data.best_rounded != null && data.best.label !== nota
     ? `${data.best_epoca_label} · ${t('detail.rounded', { value: data.best.label })}`
     : data.best_epoca_label;
-  return `<span class="grade-pill ${cls}" title="${escapeHtml(dica)}">
-    ${escapeHtml(nota)}${epoca ? `<small>${epoca}</small>` : ''}</span>`;
+  if (data.edited) {
+    // Vê-se logo que a nota foi mexida, e o que a pauta dizia antes.
+    dica = data.original
+      ? `${t('grade.edited')} · ${t('grade.edited_was', { value: data.original.label })}`
+      : t('grade.edited');
+  }
+  return `<span class="grade-pill ${cls} ${data.edited ? 'is-edited' : ''}"
+    title="${escapeHtml(dica)}">
+    ${escapeHtml(nota)}${epoca && !data.edited ? `<small>${epoca}</small>` : ''}</span>`;
 }
 
-function detailRow(student, subjects) {
+function detailRow(student, subjects, yearColumns = 0) {
   const cards = subjects.filter((s) => student.subjects[s]).map((subject) => {
     const data = student.subjects[subject];
     const lines = (state.results.epocas || []).map((epoca) => {
@@ -975,7 +1172,7 @@ function detailRow(student, subjects) {
       </div>
     </div>` : '';
 
-  return `<tr class="detail-row"><td colspan="${subjects.length + 4}">
+  return `<tr class="detail-row"><td colspan="${subjects.length + yearColumns + 4}">
     <div class="detail-inner">${mediasCard(student)}${cards}${alternates}</div></td></tr>`;
 }
 
@@ -1090,6 +1287,14 @@ function setup() {
     button.addEventListener('click', () => switchLanguage(button.dataset.lang));
   });
 
+  paintTheme();
+  $('theme-toggle').addEventListener('click', toggleTheme);
+  if (window.matchMedia) {
+    // Quem não escolheu tema nenhum acompanha o sistema em directo.
+    window.matchMedia('(prefers-color-scheme: dark)')
+      .addEventListener('change', paintTheme);
+  }
+
   document.querySelectorAll('.step').forEach((button) => {
     button.addEventListener('click', () => {
       if (button.disabled) return;
@@ -1153,6 +1358,12 @@ function setup() {
   // quem manda é o que ficou guardado no servidor.
   api('/api/state').then((data) => {
     state.review = data;
+    const tema = data.settings?.theme;
+    applyTheme(tema === 'light' || tema === 'dark' ? tema : null);
+    try {
+      if (tema === 'light' || tema === 'dark') localStorage.setItem('gradeorg.theme', tema);
+      else localStorage.removeItem('gradeorg.theme');
+    } catch (error) { /* privado */ }
     if (data.language && data.language !== LANG) {
       setLanguage(data.language);
       try { localStorage.setItem('gradeorg.lang', data.language); } catch (e) { /* privado */ }

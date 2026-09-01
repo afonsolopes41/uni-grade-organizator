@@ -23,6 +23,7 @@ from .models import EPOCAS, ROLE_ID, ROLE_NAME, GradeEntry
 from .normalize import (
     Grade,
     clean_text,
+    format_grade,
     name_tokens,
     norm_name,
     norm_text,
@@ -57,10 +58,17 @@ class Settings:
     manual_subjects: list = field(default_factory=list)
     #: Fontes que o utilizador ja conferiu -- ficam arrumadas na interface.
     confirmed_sources: list = field(default_factory=list)
+    #: Notas corrigidas a mao: ``{chave do aluno: {cadeira: valor}}``. Mandam
+    #: sobre o que estiver na pauta, e contam para medias e aprovacoes.
+    grade_overrides: dict = field(default_factory=dict)
+    #: Alunos que o utilizador tirou da pauta final. Continuam nos ficheiros.
+    removed_students: list = field(default_factory=list)
     scale: float = DEFAULT_SCALE
     merge_by_name: bool = True
     #: Lingua da interface e do Excel ("pt" ou "en").
     language: str = DEFAULT_LANGUAGE
+    #: Tema da interface: "auto" segue o sistema, "light" e "dark" mandam.
+    theme: str = "auto"
 
     def curriculum_for(self, subject: str) -> dict:
         return dict(self.subject_curriculum.get(subject) or {})
@@ -71,6 +79,13 @@ class Settings:
 
     def is_removed(self, subject: Optional[str]) -> bool:
         return bool(subject) and subject in self.removed_subjects
+
+    def is_removed_student(self, key: Optional[str]) -> bool:
+        return bool(key) and key in self.removed_students
+
+    def edits_for(self, key: Optional[str]) -> dict:
+        """Notas corrigidas a mao para este aluno."""
+        return dict(self.grade_overrides.get(key) or {}) if key else {}
 
     def pass_mark_for(self, subject: Optional[str]) -> float:
         """A nota minima desta UC, ou a de omissao se nao tiver uma."""
@@ -106,6 +121,8 @@ class Settings:
         settings.confirmed_sources = sorted(
             {str(s) for s in (data.get("confirmed_sources") or []) if s})
         settings.language = normalize_language(data.get("language"))
+        tema = str(data.get("theme") or "auto").lower()
+        settings.theme = tema if tema in ("auto", "light", "dark") else "auto"
         for subject, meta in (data.get("subject_curriculum") or {}).items():
             entry = dict(settings.subject_curriculum.get(subject) or {})
             if "course" in (meta or {}):
@@ -122,13 +139,30 @@ class Settings:
                     entry.pop(key, None)
                     continue
                 try:
-                    entry[key] = float(value) if key == "ects" else int(value)
+                    # Ano, semestre e ECTS sao sempre numeros inteiros.
+                    entry[key] = int(round(float(value)))
                 except (TypeError, ValueError):
                     continue
             if entry:
                 settings.subject_curriculum[subject] = entry
             else:
                 settings.subject_curriculum.pop(subject, None)
+        settings.removed_students = list(dict.fromkeys(
+            str(k) for k in (data.get("removed_students") or []) if str(k).strip()))
+        for key, edits in (data.get("grade_overrides") or {}).items():
+            atual = dict(settings.grade_overrides.get(key) or {})
+            for subject, value in (edits or {}).items():
+                if value in (None, ""):
+                    atual.pop(subject, None)
+                    continue
+                try:
+                    atual[subject] = float(str(value).replace(",", "."))
+                except (TypeError, ValueError):
+                    continue
+            if atual:
+                settings.grade_overrides[key] = atual
+            else:
+                settings.grade_overrides.pop(key, None)
         settings.merge_by_name = bool(data.get("merge_by_name", True))
         return settings
 
@@ -141,9 +175,13 @@ class Settings:
                 "removed_subjects": list(self.removed_subjects),
                 "manual_subjects": list(self.manual_subjects),
                 "confirmed_sources": list(self.confirmed_sources),
+                "grade_overrides": {k: dict(v) for k, v in
+                                    self.grade_overrides.items()},
+                "removed_students": list(self.removed_students),
                 "scale": self.scale,
                 "merge_by_name": self.merge_by_name,
-                "language": self.language}
+                "language": self.language,
+                "theme": self.theme}
 
 
 # --------------------------------------------------------------------------
@@ -611,6 +649,10 @@ def consolidate(sources: list, settings: Optional[Settings] = None) -> dict:
     for cluster in clusters:
         name = _best_name(cluster)
         student_id = _best_id(cluster)
+        chave = _student_key(student_id, name)
+        if settings.is_removed_student(chave):
+            # Aluno tirado da pauta final: sai daqui e nao gera avisos nenhuns.
+            continue
         all_ids = sorted({r.student_id for r in cluster if r.student_id})
         all_names = sorted({r.name for r in cluster if r.name})
 
@@ -731,12 +773,17 @@ def consolidate(sources: list, settings: Optional[Settings] = None) -> dict:
         inscrito = sorted({subject_names.get(r.source_id) for r in cluster
                            if subject_names.get(r.source_id)}, key=_sort_key)
 
+        _apply_grade_edits(subjects, chave, settings)
+        inscrito = sorted(set(inscrito) | {s for s in subjects
+                                           if not settings.is_removed(s)},
+                          key=_sort_key)
+
         averages = _student_averages(subjects, settings, semestres)
         averages.update(_plan_coverage(subjects, known_subjects, courses))
         students.append({
             "seen_subjects": inscrito,
             "averages": averages,
-            "key": _student_key(student_id, name),
+            "key": chave,
             "name": name or (f"(sem nome) {student_id}" if student_id else "(sem nome)"),
             "student_id": student_id,
             "all_ids": all_ids,
@@ -880,6 +927,33 @@ def _approved(grade: Optional[Grade], settings: Settings, subject: Optional[str]
     if grade.status in ("REPROVADO", "FALTOU", "DESISTIU", "NAO_ADMITIDO"):
         return False
     return None
+
+
+def _apply_grade_edits(subjects: dict, key: str, settings: Settings) -> None:
+    """Poe as notas corrigidas a mao por cima das que vieram das pautas.
+
+    A nota escrita pelo utilizador manda: e ela que aparece na tabela, que
+    decide a aprovacao e que entra nas medias. A original nao se perde -- fica
+    guardada ao lado, para se poder ver o que a pauta dizia e voltar atras.
+
+    Corrigir uma cadeira que o aluno nao tinha na pauta cria-a: e assim que se
+    acrescenta uma nota que faltava.
+    """
+    for subject, value in settings.edits_for(key).items():
+        if settings.is_removed(subject):
+            continue
+        nota = Grade(value=value, raw=format_grade(value), scale=settings.scale)
+        atual = subjects.get(subject)
+        if atual is None:
+            atual = subjects[subject] = {
+                "subject": subject, "epocas": {}, "best_epoca": None,
+                "best": None, "pass_mark": settings.pass_mark_for(subject),
+                "approved": None,
+            }
+        atual["original"] = atual["best"]
+        atual["edited"] = True
+        atual["best"] = nota
+        atual["approved"] = _approved(nota, settings, subject)
 
 
 def _weighted_mean(entries: list):
@@ -1059,6 +1133,10 @@ def to_json(result: dict, lang: str = DEFAULT_LANGUAGE) -> dict:
                 "best": best.to_dict(lang) if best else None,
                 "best_rounded": round_grade(best.value) if best else None,
                 "approved": data["approved"],
+                "edited": bool(data.get("edited")),
+                # O que a pauta dizia antes da correccao a mao.
+                "original": (data["original"].to_dict(lang)
+                             if data.get("original") else None),
             }
         students.append({
             "averages": student["averages"],

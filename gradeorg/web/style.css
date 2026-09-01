@@ -22,6 +22,8 @@
   --green-bg:   #e6f2ea;
   --red:        #a52d24;
   --red-bg:     #fbe9e7;
+  --row-alt:    #f2efe9;
+  --on-accent:  #ffffff;
   --radius:     10px;
   --radius-sm:  7px;
   --shadow:     0 1px 2px rgba(28, 27, 25, .05);
@@ -31,8 +33,14 @@
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 }
 
+/* Tema escuro. Vale em três situações, por esta ordem: o utilizador escolheu
+   escuro, ou não escolheu nada e o sistema está escuro. Quem escolhe claro
+   fica com claro, mesmo num sistema escuro -- por isso o :not(). */
+:root[data-theme="dark"],
+:root[data-theme="dark"] body { color-scheme: dark; }
+
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --paper:     #131518;
     --surface:   #1a1d21;
     --surface-2: #1f2328;
@@ -50,10 +58,38 @@
     --green-bg:  #16281f;
     --red:       #f08e84;
     --red-bg:    #2b1917;
+    --row-alt:   #232830;
+    --on-accent: #121417;
     --shadow:    0 1px 2px rgba(0, 0, 0, .4);
     --shadow-lg: 0 14px 36px rgba(0, 0, 0, .5);
   }
 }
+
+/* A mesma paleta quando é o utilizador a escolher escuro.
+   As duas listas têm de andar a par: qualquer cor nova entra nas duas. */
+:root[data-theme="dark"] {
+    --paper:     #131518;
+    --surface:   #1a1d21;
+    --surface-2: #1f2328;
+    --line:      #2c3138;
+    --line-soft: #242930;
+    --ink:       #e9e6e2;
+    --ink-2:     #c6c2bd;
+    --muted:     #8d8880;
+    --accent:    #8fb3d9;
+    --accent-2:  #a9c6e6;
+    --accent-bg: #1d2731;
+    --gold:      #d9ab5c;
+    --gold-bg:   #2a2318;
+    --green:     #6fce9d;
+    --green-bg:  #16281f;
+    --red:       #f08e84;
+    --red-bg:    #2b1917;
+    --row-alt:   #232830;
+    --on-accent: #121417;
+    --shadow:    0 1px 2px rgba(0, 0, 0, .4);
+    --shadow-lg: 0 14px 36px rgba(0, 0, 0, .5);
+  }
 
 *, *::before, *::after { box-sizing: border-box; }
 
@@ -101,11 +137,10 @@ button, input, select { font: inherit; color: inherit; }
   place-items: center;
   width: 38px; height: 38px;
   border-radius: 10px;
-  color: var(--surface);
+  color: var(--on-accent);
   background: var(--accent);
   flex: none;
 }
-@media (prefers-color-scheme: dark) { .brand-mark { color: #121417; } }
 
 .brand-text h1 { margin: 0; font-size: 19px; line-height: 1.2; }
 .brand-text p { margin: 1px 0 0; font-size: 12.5px; color: var(--muted); max-width: 52ch; }
@@ -141,8 +176,7 @@ button, input, select { font: inherit; color: inherit; }
   border-color: var(--line);
   box-shadow: var(--shadow);
 }
-.step.is-active b { background: var(--accent); border-color: var(--accent); color: var(--surface); }
-@media (prefers-color-scheme: dark) { .step.is-active b { color: #121417; } }
+.step.is-active b { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .step:disabled { opacity: .4; cursor: default; }
 
 .lang { display: flex; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; }
@@ -154,8 +188,7 @@ button, input, select { font: inherit; color: inherit; }
   font-size: 11.5px; font-weight: 600; letter-spacing: .05em;
   cursor: pointer;
 }
-.lang button.is-on { background: var(--accent); color: var(--surface); }
-@media (prefers-color-scheme: dark) { .lang button.is-on { color: #121417; } }
+.lang button.is-on { background: var(--accent); color: var(--on-accent); }
 
 /* ------------------------------------------------------------ estrutura */
 
@@ -205,9 +238,8 @@ main {
 }
 .btn:hover { border-color: var(--muted); }
 .btn:active { transform: translateY(1px); }
-.btn-primary { background: var(--accent); border-color: var(--accent); color: var(--surface); }
+.btn-primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .btn-primary:hover { background: var(--accent-2); border-color: var(--accent-2); }
-@media (prefers-color-scheme: dark) { .btn-primary { color: #121417; } }
 .btn-ghost { background: transparent; }
 .btn-danger { color: var(--red); border-color: color-mix(in srgb, var(--red) 35%, var(--line)); }
 .btn-danger:hover { background: var(--red-bg); border-color: var(--red); }
@@ -587,7 +619,9 @@ input[type="number"] { width: 82px; text-align: center; font-variant-numeric: ta
 
 
 .table-wrap {
-  overflow-x: auto;
+  overflow: auto;
+  max-height: min(72vh, 780px);
+  overscroll-behavior: contain;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -627,10 +661,14 @@ input[type="number"] { width: 82px; text-align: center; font-variant-numeric: ta
   border-right: 2px solid var(--surface);
   border-radius: 6px 6px 0 0;
 }
+.grades .group-row th { top: 0; z-index: 3; }
 .grades tr.below-groups th { top: 28px; }
 .grades th.num, .grades td.num { text-align: center; }
 .grades td { padding: 7px 12px; border-bottom: 1px solid var(--line-soft); }
-.grades tbody tr:hover > td { background: var(--surface-2); }
+/* Linha sim, linha não: com trinta cadeiras à frente, é o que impede o olho
+   de saltar de linha a meio caminho. */
+.grades tbody tr.impar > td { background: var(--row-alt); }
+.grades tbody tr:hover > td { background: var(--accent-bg); }
 .grades tr.is-open > td { background: var(--accent-bg); }
 .grades td.strong { font-weight: 600; font-variant-numeric: tabular-nums; }
 .student-id { font-family: var(--mono); font-size: 12px; color: var(--muted); }
@@ -812,3 +850,94 @@ input[type="number"] { width: 82px; text-align: center; font-variant-numeric: ta
   .actions { flex-wrap: wrap; }
   .memory-note { order: 3; width: 100%; }
 }
+
+/* --------------------------------------------------------- tema claro/escuro */
+
+.theme-toggle {
+  display: grid;
+  place-items: center;
+  width: 32px; height: 32px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  cursor: pointer;
+  transition: color .15s, border-color .15s;
+}
+.theme-toggle:hover { color: var(--ink); border-color: var(--muted); }
+
+/* Mostra-se o destino, não o estado actual: no claro vê-se a lua (o que se
+   ganha ao clicar), no escuro vê-se o sol. */
+.theme-toggle .moon { display: block; }
+.theme-toggle .sun { display: none; }
+:root[data-theme="dark"] .theme-toggle .moon { display: none; }
+:root[data-theme="dark"] .theme-toggle .sun { display: block; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .theme-toggle .moon { display: none; }
+  :root:not([data-theme="light"]) .theme-toggle .sun { display: block; }
+}
+
+/* -------------------------------------------- médias por ano na tabela */
+
+/* As médias por ano ficam num bloco à parte, separado das notas por um traço
+   -- sem cor de fundo própria, para as riscas alternadas atravessarem a linha
+   toda sem interrupção. */
+.grades th.media-ano, .grades td.media-ano {
+  font-variant-numeric: tabular-nums;
+  width: 62px;
+}
+.grades .inicio-anos {
+  border-left: 1px solid var(--line);
+}
+.grades td.media-ano { color: var(--accent); font-weight: 600; }
+/* Nome próprio: «medias» já é a grelha do cartão de médias do detalhe. */
+.grades .group-row th.group.grupo-anos { color: var(--muted); background: var(--surface-2); }
+
+/* ------------------------------------------------- corrigir uma nota */
+
+.grades td.grade-cell { cursor: text; }
+.grades td.grade-cell.is-editing { padding: 3px 6px; }
+
+.grade-pill.is-edited {
+  box-shadow: inset 0 0 0 1.5px var(--accent);
+}
+/* Um ponto no canto marca as notas que foram escritas à mão. */
+.grade-pill.is-edited::after {
+  content: '';
+  width: 4px; height: 4px;
+  margin-left: 1px;
+  border-radius: 50%;
+  background: var(--accent);
+  align-self: center;
+}
+
+.grade-input {
+  width: 100%;
+  min-width: 56px;
+  padding: 4px 6px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--ink);
+}
+.grade-input:focus { outline: 2px solid var(--accent-bg); outline-offset: 1px; }
+
+/* ---------------------------------------------- tirar alunos da pauta */
+
+.drop-student {
+  padding: 0 4px;
+  border: 0;
+  background: none;
+  color: var(--line);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color .15s;
+}
+.grades tbody tr:hover .drop-student { color: var(--muted); }
+.drop-student:hover { color: var(--red) !important; }
+
+#dropped-students:not(:empty) { margin-top: -4px; }
