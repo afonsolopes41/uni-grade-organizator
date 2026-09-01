@@ -253,6 +253,7 @@ CATALOG = {
         "xl.state.approved": "Aprovado",
         "xl.state.failed": "Reprovado",
         "xl.state.pending": "—",
+        "xl.edited": "corrigido à mão",
         "xl.averages.title": "Médias por semestre, por ano e de curso",
         "xl.averages.subtitle":
             "Contam as cadeiras aprovadas · os ECTS em branco valem 1 · gerado em {stamp}",
@@ -492,6 +493,7 @@ CATALOG = {
         "xl.state.approved": "Passed",
         "xl.state.failed": "Failed",
         "xl.state.pending": "—",
+        "xl.edited": "edited by hand",
         "xl.averages.title": "Averages per semester, per year and for the degree",
         "xl.averages.subtitle":
             "Only passed courses count · blank ECTS count as 1 · generated on {stamp}",

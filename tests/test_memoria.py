@@ -68,3 +68,46 @@ def test_estado_estragado_nao_impede_o_arranque():
     with open(storage.state_path(), "w", encoding="utf-8") as stream:
         stream.write("{isto não é json")
     assert Session().files == []
+
+
+OUTRO_CSV = (
+    "Nome;Nº Aluno;Nota Final\n"
+    "Marta Nunes Dias;223344;13\n"
+).encode("utf-8")
+
+
+def test_tirar_um_ficheiro_esquece_as_respostas_que_eram_dele():
+    sessao = Session()
+    sessao.add_file("pauta.csv", CSV)
+    fonte = sessao.sources[0].id
+    sessao.update(answers={f"{fonte}:subject": "Redes"})
+
+    sessao.remove_file("pauta.csv")
+    assert sessao.answers == {}
+
+
+def test_pauta_nova_nao_herda_a_cadeira_de_uma_que_foi_tirada():
+    """O bug: tirar a pauta e reabrir fazia a seguinte nascer com o nome dela."""
+    primeira = Session()
+    primeira.add_file("pauta.csv", CSV)
+    primeira.add_file("redes.csv", CSV)
+    primeira.update(answers={f"{primeira.sources[1].id}:subject": "Redes"})
+    primeira.remove_file("redes.csv")
+
+    segunda = Session()                       # fechar e voltar a abrir
+    segunda.add_file("outra.csv", OUTRO_CSV)
+    nova = [s for s in segunda.sources if s.filename == "outra.csv"][0]
+    assert nova.id != "f2s0", "a ordem de um ficheiro tirado nao se reutiliza"
+    assert nova.subject.value != "Redes"
+
+
+def test_o_tema_escolhido_fica_guardado():
+    primeira = Session()
+    primeira.update(settings={"theme": "dark"})
+    assert Session().settings.theme == "dark"
+
+
+def test_um_tema_que_nao_existe_volta_ao_automatico():
+    sessao = Session()
+    sessao.update(settings={"theme": "roxo"})
+    assert sessao.settings.theme == "auto"

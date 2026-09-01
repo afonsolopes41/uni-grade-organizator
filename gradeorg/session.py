@@ -98,6 +98,10 @@ class Session:
         self.answers = dict(state.get("answers") or {})
         self.overrides = {k: dict(v) for k, v in (state.get("overrides") or {}).items()}
         self.settings = Settings.from_dict(state.get("settings") or {})
+        # O contador vem gravado: se fosse deduzido dos ficheiros que sobraram,
+        # tirar o ultimo fazia-o recuar e a pauta seguinte herdava o id -- e o
+        # nome de cadeira -- da que tinha sido tirada.
+        self._counter = int(state.get("counter") or 0)
 
         for entry in state.get("files") or []:
             path = os.path.join(storage.files_dir(), entry.get("path") or "")
@@ -122,6 +126,7 @@ class Session:
             storage.write_json(storage.state_path(), {
                 "version": storage.FORMAT_VERSION,
                 "files": [f.to_state() for f in self.files],
+                "counter": self._counter,
                 "answers": self.answers,
                 "overrides": self.overrides,
                 "settings": self.settings.to_dict(),
@@ -183,6 +188,7 @@ class Session:
             leaving = [f for f in self.files if f.name == filename]
             self.files = [f for f in self.files if f.name != filename]
             self._dirty = True
+            self._forget_sources(f.order for f in leaving)
             for item in leaving:
                 for path in (item.path, self._tables_path(item.order)):
                     try:
@@ -190,6 +196,23 @@ class Session:
                     except OSError:
                         pass
             self._save()
+
+    def _forget_sources(self, orders) -> None:
+        """Esquece o que dizia respeito a pautas de ficheiros que sairam.
+
+        Sem isto, as respostas ficavam guardadas com o id da fonte
+        (``f2s0:subject``) muito depois de o ficheiro ter sido tirado, e
+        colavam-se a pauta seguinte que calhasse nesse id.
+        """
+        prefixos = tuple(f"f{order}s" for order in orders)
+        if not prefixos:
+            return
+        self.answers = {k: v for k, v in self.answers.items()
+                        if not k.startswith(prefixos)}
+        self.overrides = {k: v for k, v in self.overrides.items()
+                          if not k.startswith(prefixos)}
+        self.settings.confirmed_sources = [
+            s for s in self.settings.confirmed_sources if not s.startswith(prefixos)]
 
     def reset(self) -> None:
         """Apaga tudo -- ficheiros, respostas e definicoes. Nao ha volta atras."""
@@ -370,6 +393,56 @@ class Session:
             self._dirty = True
             self._save()
 
+    # -- alunos e notas ----------------------------------------------------
+
+    def edit_grade(self, student_key: str, subject: str, value) -> None:
+        """Corrige uma nota a mao. Com o valor vazio, volta a da pauta."""
+        if not student_key or not subject:
+            return
+        with self._lock:
+            edits = {k: dict(v) for k, v in self.settings.grade_overrides.items()}
+            do_aluno = edits.setdefault(student_key, {})
+            if value in (None, ""):
+                do_aluno.pop(subject, None)
+            else:
+                try:
+                    do_aluno[subject] = float(str(value).replace(",", "."))
+                except (TypeError, ValueError):
+                    return
+            if not do_aluno:
+                edits.pop(student_key, None)
+            self.settings.grade_overrides = edits
+            self._save()
+
+    def remove_student(self, student_key: str) -> None:
+        """Tira um aluno da pauta final. Os ficheiros ficam -- da para repor."""
+        if not student_key:
+            return
+        with self._lock:
+            if student_key not in self.settings.removed_students:
+                self.settings.removed_students = sorted(
+                    self.settings.removed_students + [student_key])
+            self._save()
+
+    def restore_student(self, student_key: str) -> None:
+        with self._lock:
+            self.settings.removed_students = [
+                k for k in self.settings.removed_students if k != student_key]
+            self._save()
+
+    def removed_students(self) -> list:
+        """Alunos tirados da lista, com o nome que tinham -- para os repor."""
+        fora = set(self.settings.removed_students)
+        if not fora:
+            return []
+        sem_filtro = Settings.from_dict(self.settings.to_dict())
+        sem_filtro.removed_students = []
+        vistos: dict = {}
+        for student in consolidate(self.sources, sem_filtro)["students"]:
+            if student["key"] in fora:
+                vistos[student["key"]] = student["name"]
+        return [{"key": k, "name": vistos.get(k, k)} for k in sorted(fora)]
+
     def set_language(self, language: str) -> None:
         with self._lock:
             self.settings.language = normalize_language(language)
@@ -432,6 +505,7 @@ class Session:
         payload["sources"] = [s.to_dict(lang) for s in self.sources]
         payload["questions"] = [q.to_dict(lang) for q in self.open_questions()]
         payload["answers"] = self.answers
+        payload["removed_students"] = self.removed_students()
         return payload
 
     def file_for_source(self, source_id: str):

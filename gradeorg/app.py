@@ -124,6 +124,24 @@ def create_app() -> Flask:
                                         action=action)}), 400
         return jsonify(SESSION.review())
 
+    @app.post("/api/students")
+    def api_students():
+        """Corrigir uma nota a mao, tirar um aluno da pauta final ou repo-lo."""
+        body = request.get_json(silent=True) or {}
+        action = body.get("action")
+        key = (body.get("key") or "").strip()
+        if action == "edit_grade":
+            SESSION.edit_grade(key, (body.get("subject") or "").strip(),
+                               body.get("value"))
+        elif action == "remove":
+            SESSION.remove_student(key)
+        elif action == "restore":
+            SESSION.restore_student(key)
+        else:
+            return jsonify({"error": tr("api.unknown_action", SESSION.language,
+                                        action=action)}), 400
+        return jsonify(SESSION.result())
+
     @app.post("/api/sources/confirm")
     def api_confirm_source():
         """Marca uma pauta como conferida (arruma-a nos ajustes avançados)."""

@@ -343,3 +343,12 @@ def test_cadeira_sem_alunos_nenhuns_nao_rebenta():
     stats = session.raw_result()["subject_stats"]["Física Geral"]
     assert stats == {"students": 0, "approved": 0, "failed": 0, "pending": 0,
                      "average": None, "pass_rate": None}
+
+
+def test_os_ects_sao_sempre_inteiros():
+    """O controlo dos ECTS anda de um em um; meio ECTS não existe."""
+    from gradeorg.consolidate import Settings
+
+    settings = Settings.from_dict({"subject_curriculum": {"Redes": {"ects": "6.5"}}})
+    assert settings.subject_curriculum["Redes"]["ects"] == 6
+    assert isinstance(settings.subject_curriculum["Redes"]["ects"], int)

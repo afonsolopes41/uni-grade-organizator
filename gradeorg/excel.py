@@ -490,7 +490,13 @@ def _build_subject_sheet(sheet: Worksheet, subject: str, students: list,
         span = f"C{current}:E{current}"
         best: Optional[Grade] = data["best"]
         best_cell = sheet.cell(row=current, column=6)
-        if best is not None and best.value is not None:
+        if data.get("edited") and best is not None and best.value is not None:
+            # Nota corrigida a mao: vale mais do que as epocas, por isso vai
+            # como valor e nao como a formula que le a melhor delas.
+            best_cell.value = best.value
+            best_cell.number_format = GRADE_FORMAT
+            best_cell.font = Font(name=FONT, size=10, bold=True, color=INK_SOFT)
+        elif best is not None and best.value is not None:
             # Recalcula se alguem corrigir uma das epocas.
             best_cell.value = f'=IF(COUNT({span})=0,"—",MAX({span}))'
             best_cell.number_format = GRADE_FORMAT
@@ -509,7 +515,10 @@ def _build_subject_sheet(sheet: Worksheet, subject: str, students: list,
             rounded.value = "—"
 
         epoca_cell = sheet.cell(row=current, column=8)
-        if best is not None and best.value is not None:
+        if data.get("edited"):
+            # Uma nota escrita à mão não vem de época nenhuma.
+            epoca_cell.value = "—"
+        elif best is not None and best.value is not None:
             epoca_cell.value = (f'=IF(COUNT({span})=0,"—",'
                                 f'INDEX($C${header_row}:$E${header_row},'
                                 f'MATCH(MAX({span}),{span},0)))')
@@ -527,8 +536,11 @@ def _build_subject_sheet(sheet: Worksheet, subject: str, students: list,
                        else _state_label(data["approved"], lang))
 
         best_info = data["epocas"].get(data["best_epoca"] or "")
-        sheet.cell(row=current, column=10,
-                   value=(best_info or {}).get("source_label", "—"))
+        origem = sheet.cell(row=current, column=10,
+                            value=(tr("xl.edited", lang) if data.get("edited")
+                                   else (best_info or {}).get("source_label", "—")))
+        if data.get("edited"):
+            origem.font = Font(name=FONT, size=9, italic=True, color=INK_SOFT)
 
     last_data = first_data + len(rows) - 1
     if rows:
