@@ -407,6 +407,19 @@ No Excel, uma nota corrigida vai como valor e não como a fórmula que lê a mel
 das épocas — senão a folha voltava atrás e mostrava outra vez a nota da pauta —,
 e a coluna de origem diz «corrigido à mão».
 
+## A ordem dos alunos na pauta final
+
+Seleccionar um aluno — a caixa à esquerda do nome — põe-no **no topo da
+tabela**, à frente de toda a gente sem selecção, pela ordem por que foi
+escolhido: o primeiro a ser seleccionado fica em primeiro. Um traço fecha o
+bloco dos seleccionados, para se ver onde recomeça o resto da pauta.
+
+Dentro do bloco a ordem muda-se à mão: a **pega ⠿** ao lado do nome arrasta a
+linha para o lugar que se quiser, e as setas **↑ ↓** fazem o mesmo com a pega em
+foco, para quem não usa rato. Tirar a selecção devolve o aluno ao lugar dele.
+
+É esta a ordem que sai no Excel quando se exportam só os seleccionados.
+
 ## Tirar um aluno da pauta final
 
 O **✕** ao lado do nome tira o aluno da listagem, das médias e do Excel (pede
@@ -461,7 +474,8 @@ UC e as contagens do resumo.
 Só usa funções anteriores ao Excel 2007 (`INDEX`, `MATCH`, `COUNTIFS`,
 `IFERROR`…), para abrir em qualquer versão e no LibreOffice.
 
-Na página é possível seleccionar alunos (ou filtrar por UC) e exportar só esses.
+Na página é possível seleccionar alunos (ou filtrar por UC) e exportar só
+esses, pela ordem em que ficaram na tabela.
 
 ## Estrutura
 

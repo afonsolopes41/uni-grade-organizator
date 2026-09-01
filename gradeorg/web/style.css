@@ -941,3 +941,27 @@ input[type="number"] { width: 82px; text-align: center; font-variant-numeric: ta
 .drop-student:hover { color: var(--red) !important; }
 
 #dropped-students:not(:empty) { margin-top: -4px; }
+
+/* ------------------------------ seleccionados no topo, e mudar de lugar */
+
+/* Os seleccionados sobem ao topo pela ordem por que foram escolhidos. Um
+   traço fecha o bloco -- não uma cor de fundo, que apagaria as riscas
+   alternadas logo onde é mais preciso distinguir linhas. */
+.grades tbody tr.ultimo-fixado > td { border-bottom: 2px solid var(--accent); }
+
+.grip {
+  border: 0; background: none; color: var(--line);
+  padding: 0 1px;
+  font-size: 12px; line-height: 1;
+  cursor: grab;
+  transition: color .15s;
+}
+.grades tbody tr:hover .grip, .grip:focus-visible { color: var(--muted); }
+.grip:active { cursor: grabbing; }
+.grip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.grades tbody tr.a-arrastar > td { opacity: .4; }
+/* Onde a linha vai cair. Vai em todas as células porque a linha é a soma
+   delas: um traço só na primeira parava à terceira coluna. */
+.grades tbody tr.alvo-cima > td { box-shadow: inset 0 2px 0 var(--accent); }
+.grades tbody tr.alvo-baixo > td { box-shadow: inset 0 -2px 0 var(--accent); }
